@@ -4,9 +4,10 @@ Mirrors the Cloudflare-token convention: secrets live in files outside the repo
 and outside any image layer. This module returns *paths* and *parsed values*,
 but never echoes a secret into an exception message or a log line.
 
-Two credentials:
+Credentials:
   * Coinbase CDP key JSON — passed to ``RESTClient(key_file=...)``.
   * SMTP App Password file — ``SMTP_USER=`` / ``SMTP_PASS=`` lines.
+  * CryptoPanic API token — a single-line token used as a query param.
 
 Host default paths live under ``~/.config/coinbase/``; in the container they are
 bind-mounted read-only at ``/run/secrets/``. Both are auto-detected.
@@ -22,8 +23,10 @@ log = logging.getLogger(__name__)
 
 _HOST_KEY = Path.home() / ".config" / "coinbase" / "grow-my-money.key"
 _HOST_SMTP = Path.home() / ".config" / "coinbase" / "grow-my-money.smtp"
+_HOST_CRYPTOPANIC = Path.home() / ".config" / "coinbase" / "grow-my-money.cryptopanic"
 _CONTAINER_KEY = Path("/run/secrets/coinbase.key")
 _CONTAINER_SMTP = Path("/run/secrets/smtp.env")
+_CONTAINER_CRYPTOPANIC = Path("/run/secrets/cryptopanic.token")
 
 
 class SecretError(Exception):
@@ -67,6 +70,24 @@ def coinbase_key_path(configured: str | None = None) -> str:
         )
     _check_mode_600(path)
     return str(path)
+
+
+def cryptopanic_token(configured: str | None = None) -> str:
+    """Return the CryptoPanic API token value (the file's stripped contents).
+
+    Unlike ``coinbase_key_path`` (which returns a *path* handed to the SDK), the
+    CryptoPanic token is used directly as a query param, so this returns the
+    token *value*. The value is NEVER logged or placed in an exception message.
+    """
+    path = _resolve(configured, _HOST_CRYPTOPANIC, _CONTAINER_CRYPTOPANIC)
+    if not path.exists():
+        raise SecretError(
+            f"CryptoPanic token file not found at {path}. Sign up at "
+            f"cryptopanic.com, generate an API token, and place it there "
+            f"(mode 600)."
+        )
+    _check_mode_600(path)
+    return path.read_text(encoding="utf-8").strip()
 
 
 def smtp_credentials(configured: str | None = None) -> dict:

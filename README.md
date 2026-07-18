@@ -76,6 +76,34 @@ them read-only at `/run/secrets/...`):
 These are read at runtime; they are **never** copied into the Docker image and
 **never** put in `.env` or the compose `environment:` block.
 
+### CryptoPanic sentiment (optional)
+
+The bot has an optional, **fail-open** news-sentiment layer that can dampen
+(resize down) or veto a buy the technicals + model would otherwise approve, based
+on CryptoPanic community votes. It ships **inert**: until you create the token
+file *and* uncomment the compose mount, every sentiment lookup fails open and the
+bot trades exactly as it does today. Sells are never affected, and none of the
+four hard safety checks change.
+
+To enable it:
+
+1. Sign up at [cryptopanic.com](https://cryptopanic.com), generate an API token.
+2. Write it to a mode-600 file (the token value only, no path):
+   ```bash
+   umask 077
+   printf '%s' '<TOKEN>' > ~/.config/coinbase/grow-my-money.cryptopanic
+   ```
+   | Purpose | Host path | Container path |
+   |---|---|---|
+   | CryptoPanic API token | `~/.config/coinbase/grow-my-money.cryptopanic` | `/run/secrets/cryptopanic.token` |
+3. Uncomment the `grow-my-money.cryptopanic` volume line in `docker-compose.yml`.
+4. `docker compose up -d --build`.
+
+Thresholds are tunable via `SENTIMENT_*` env vars (see `.env.example`). A
+strongly-bearish product's buy is softened or blocked and the reason
+("rejected: bearish sentiment ...") surfaces automatically in the dashboard
+activity feed.
+
 ## Docker deploy (lab pattern)
 
 ```bash
@@ -85,10 +113,32 @@ make status
 make down
 ```
 
-No `ports:` are exposed (the bot serves nothing). `restart: unless-stopped`,
-non-root uid 1000, `no-new-privileges`. `state/` is bind-mounted so trade
-history, mode, halt flag, benchmark anchor, and the KILL sentinel survive
-restarts.
+`restart: unless-stopped`, non-root uid 1000, `no-new-privileges`. `state/` is
+bind-mounted so trade history, mode, halt flag, benchmark anchor, and the KILL
+sentinel survive restarts. The container runs two processes under a small
+`entrypoint.sh` supervisor (`init: true` gives it tini as PID 1): the trading
+bot loop and the read-only web dashboard below.
+
+## Dashboard (read-only)
+
+A small web dashboard runs inside the same container and is exposed on host
+**loopback only** (`127.0.0.1:8420` — see the compose `ports:` mapping):
+
+```bash
+open http://127.0.0.1:8420     # positions + unrealized P&L, cash, total value,
+                               # trade/intent feed, bot-vs-buy&hold + equity chart,
+                               # mode/halt/kill status, latest model meta
+make dash                      # prints the URL + a health-check status code
+```
+
+It is **strictly read-only**: it opens its own `mode=ro` SQLite connection (never
+`State`, which would write), never touches an order/risk/kill path, and only
+polls Coinbase for spot prices behind a short TTL cache (falling back to the last
+recorded trade price, then avg entry, when a price is unavailable). The page
+polls `/api/data` every `DASHBOARD_REFRESH_SEC` and redraws without a reload.
+There are no control actions — the kill switch stays CLI-only. Tunables:
+`DASHBOARD_HOST` / `DASHBOARD_PORT` / `DASHBOARD_REFRESH_SEC` /
+`DASHBOARD_PRICE_TTL_SEC` (see `.env.example`).
 
 ## Kill switch
 

@@ -18,10 +18,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # App code only — no .env, no state/, no credential files (see .dockerignore).
 COPY src/ ./src/
 COPY scripts/ ./scripts/
+# Supervisor that runs the bot loop AND the read-only web dashboard together.
+COPY --chmod=0755 entrypoint.sh ./
 
 # state/ is a bind mount at runtime; create the dir so first run has it.
 RUN mkdir -p /app/state && chown -R 1000:1000 /app
 
 USER 1000:1000
 
-ENTRYPOINT ["python", "-m", "src.bot"]
+ENTRYPOINT ["/app/entrypoint.sh"]

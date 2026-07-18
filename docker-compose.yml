@@ -9,10 +9,16 @@ services:
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
     restart: unless-stopped
+    # tini as PID 1: reaps zombies and forwards SIGTERM to entrypoint.sh so the
+    # bot + dashboard both stop cleanly (see entrypoint.sh).
+    init: true
     user: "1000:1000"
     security_opt:
       - no-new-privileges:true
-    # NOTE: no `ports:` — this bot serves nothing.
+    # Read-only web dashboard. Bound to 0.0.0.0 INSIDE the container; host
+    # exposure is restricted to loopback by this mapping prefix.
+    ports:
+      - "127.0.0.1:8420:8420"
     env_file:
       - .env
     environment:
@@ -20,9 +26,14 @@ services:
       # and the SMTP password come ONLY from the :ro mounts below, never here.
       COINBASE_KEY_FILE: /run/secrets/coinbase.key
       SMTP_CREDS_FILE: /run/secrets/smtp.env
+      # News-sentiment token file (harmless with no mount; feature stays inert).
+      CRYPTOPANIC_TOKEN_FILE: /run/secrets/cryptopanic.token
     volumes:
       # Persistent, bind-mounted state (SQLite db, model pickle, KILL sentinel).
       - ./state:/app/state
       # Out-of-repo credentials, read-only, never baked into the image.
       - ${HOME}/.config/coinbase/grow-my-money.key:/run/secrets/coinbase.key:ro
       - ${HOME}/.config/coinbase/grow-my-money.smtp:/run/secrets/smtp.env:ro
+      # Uncomment AFTER creating the CryptoPanic token file (see README), then
+      # `docker compose up -d`. Leaving it commented keeps the feature inert.
+      # - ${HOME}/.config/coinbase/grow-my-money.cryptopanic:/run/secrets/cryptopanic.token:ro

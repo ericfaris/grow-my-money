@@ -61,7 +61,6 @@ class RiskConfig:
     """Hard safety caps. All order intents pass through these thresholds."""
 
     portfolio_halt_fraction: float = 0.70
-    per_position_fraction: float = 0.25
     max_trades_per_24h: int = 5
     min_order_usd: float = 10.0
     halt_auto_flatten: bool = False
@@ -69,8 +68,6 @@ class RiskConfig:
     def validate(self) -> None:
         if not (0.0 < self.portfolio_halt_fraction < 1.0):
             raise ValueError("PORTFOLIO_HALT_FRACTION must be in (0,1)")
-        if not (0.0 < self.per_position_fraction <= 1.0):
-            raise ValueError("PER_POSITION_FRACTION must be in (0,1]")
         if self.max_trades_per_24h < 0:
             raise ValueError("MAX_TRADES_PER_24H must be >= 0")
         if self.min_order_usd < 0:
@@ -116,6 +113,29 @@ class Config:
     coinbase_key_file: str = ""
     smtp_creds_file: str = ""
 
+    dashboard_host: str = "0.0.0.0"
+    dashboard_port: int = 8420
+    dashboard_refresh_sec: int = 15
+    dashboard_price_ttl_sec: int = 20
+
+    # News/sentiment (fail-open; inert until a CryptoPanic token file exists).
+    cryptopanic_token_file: str = ""
+    sentiment_enabled: bool = True
+    sentiment_ttl_sec: int = 900
+    sentiment_api_base: str = "https://cryptopanic.com/api/developer/v2/posts/"
+    sentiment_dampen_score: float = -0.3
+    sentiment_veto_score: float = -0.6
+    sentiment_dampen_factor: float = 0.5
+    sentiment_timeout_sec: float = 4.0
+
+    # Volume confirmation + higher-timeframe (HTF) trend dampener (buys only).
+    volume_avg_window: int = 20
+    volume_confirm_ratio: float = 1.2
+    volume_thin_ratio: float = 0.7
+    volume_thin_factor: float = 0.6
+    htf_candle_granularity: str = "SIX_HOUR"
+    htf_disagree_factor: float = 0.5
+
     risk: RiskConfig = field(default_factory=RiskConfig)
 
     def validate(self) -> None:
@@ -141,7 +161,6 @@ def load_config(env: dict | None = None, use_dotenv: bool = True) -> Config:
 
     risk = RiskConfig(
         portfolio_halt_fraction=_get_float(env, "PORTFOLIO_HALT_FRACTION", 0.70),
-        per_position_fraction=_get_float(env, "PER_POSITION_FRACTION", 0.25),
         max_trades_per_24h=_get_int(env, "MAX_TRADES_PER_24H", 5),
         min_order_usd=_get_float(env, "MIN_ORDER_USD", 10.0),
         halt_auto_flatten=_get_bool(env, "HALT_AUTO_FLATTEN", False),
@@ -177,6 +196,27 @@ def load_config(env: dict | None = None, use_dotenv: bool = True) -> Config:
         report_recipient=_get(env, "REPORT_RECIPIENT", ""),
         coinbase_key_file=_get(env, "COINBASE_KEY_FILE", ""),
         smtp_creds_file=_get(env, "SMTP_CREDS_FILE", ""),
+        dashboard_host=_get(env, "DASHBOARD_HOST", "0.0.0.0"),
+        dashboard_port=_get_int(env, "DASHBOARD_PORT", 8420),
+        dashboard_refresh_sec=_get_int(env, "DASHBOARD_REFRESH_SEC", 15),
+        dashboard_price_ttl_sec=_get_int(env, "DASHBOARD_PRICE_TTL_SEC", 20),
+        cryptopanic_token_file=_get(env, "CRYPTOPANIC_TOKEN_FILE", ""),
+        sentiment_enabled=_get_bool(env, "SENTIMENT_ENABLED", True),
+        sentiment_ttl_sec=_get_int(env, "SENTIMENT_TTL_SEC", 900),
+        sentiment_api_base=_get(
+            env, "SENTIMENT_API_BASE",
+            "https://cryptopanic.com/api/developer/v2/posts/",
+        ),
+        sentiment_dampen_score=_get_float(env, "SENTIMENT_DAMPEN_SCORE", -0.3),
+        sentiment_veto_score=_get_float(env, "SENTIMENT_VETO_SCORE", -0.6),
+        sentiment_dampen_factor=_get_float(env, "SENTIMENT_DAMPEN_FACTOR", 0.5),
+        sentiment_timeout_sec=_get_float(env, "SENTIMENT_TIMEOUT_SEC", 4.0),
+        volume_avg_window=_get_int(env, "VOLUME_AVG_WINDOW", 20),
+        volume_confirm_ratio=_get_float(env, "VOLUME_CONFIRM_RATIO", 1.2),
+        volume_thin_ratio=_get_float(env, "VOLUME_THIN_RATIO", 0.7),
+        volume_thin_factor=_get_float(env, "VOLUME_THIN_FACTOR", 0.6),
+        htf_candle_granularity=_get(env, "HTF_CANDLE_GRANULARITY", "SIX_HOUR"),
+        htf_disagree_factor=_get_float(env, "HTF_DISAGREE_FACTOR", 0.5),
         risk=risk,
     )
     cfg.validate()

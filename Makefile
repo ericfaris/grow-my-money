@@ -7,7 +7,7 @@ PIP := $(VENV)/bin/pip
 export GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 export BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-.PHONY: venv test up down logs stop resume status once report
+.PHONY: venv test up down logs stop resume status once report dash
 
 venv:
 	python3 -m venv $(VENV)
@@ -42,3 +42,8 @@ once:
 
 report:
 	$(PY) -m src.cli report-now --dry-run
+
+# Read-only web dashboard (local loopback only).
+dash:
+	@echo open http://127.0.0.1:8420
+	@curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8420/

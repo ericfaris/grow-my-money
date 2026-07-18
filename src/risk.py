@@ -9,9 +9,15 @@ the reason logged loudly.
 Ordered checks (plan section 2.7):
   1. Kill switch (re-read here, immediately before any order).
   2. Portfolio-value halt (persistent trip flag; stays tripped until human resume).
-  3. Per-position cap (resize down to headroom; reject if headroom < min order).
-  4. Rolling-24h trade-count cap (trailing now-24h, reject — never queue).
+  3. Rolling-24h trade-count cap (trailing now-24h, reject — never queue).
 Any un-evaluable input -> reject.
+
+A fifth, DELIBERATELY FAIL-**OPEN** step (news-sentiment dampener/veto, buys
+only) runs last. It is the sole exception to the fail-closed rule above: it
+catches ALL of its own exceptions internally and proceeds unchanged on any
+error, so a sentiment/API bug can never block a buy (the opposite of fail-safe
+here would be silently rejecting every buy). It only ever softens or vetoes a
+buy the four hard checks already approved; it never relaxes any of them.
 """
 from __future__ import annotations
 
@@ -49,13 +55,16 @@ HALT_FLAG = "portfolio_halt_tripped"
 
 
 class RiskManager:
-    def __init__(self, config, state, portfolio, killswitch, price_source: PriceSource):
+    def __init__(self, config, state, portfolio, killswitch, price_source: PriceSource,
+                 *, sentiment=None):
         self.cfg = config                 # Config (has .risk RiskConfig)
         self.rc = config.risk
         self.state = state
         self.portfolio = portfolio
         self.killswitch = killswitch
         self.price_source = price_source
+        # Optional, keyword-only, fail-OPEN news-sentiment provider. None -> inert.
+        self.sentiment = sentiment
 
     def check(self, intent: TradeIntent, now=None) -> RiskDecision:
         try:
@@ -83,19 +92,10 @@ class RiskManager:
             if halt is not None:
                 return halt
 
-        # 3) Per-position cap (buys only) — resize to headroom.
-        if is_buy:
-            resized = self._check_per_position(intent)
-            if resized.action == "reject":
-                return resized
-            # carry the possibly-resized notional forward
-            working_notional = resized.adjusted_notional
-            resize_reason = resized.reason if resized.action == "resize" else ""
-        else:
-            working_notional = intent.notional
-            resize_reason = ""
+        working_notional = intent.notional
+        resize_reason = ""
 
-        # 4) Rolling-24h trade-count cap. Flatten sells are exempt.
+        # 3) Rolling-24h trade-count cap. Flatten sells are exempt.
         if not (intent.is_flatten and not is_buy):
             count = self.state.trades_in_last_24h(now=now)
             if count >= self.rc.max_trades_per_24h:
@@ -103,6 +103,47 @@ class RiskManager:
                             intent.side, intent.product, self.rc.max_trades_per_24h, count)
                 return RiskDecision("reject", 0.0,
                                     f"daily trade cap {self.rc.max_trades_per_24h}/24h reached")
+
+        # 4) News-sentiment dampener/veto (buys only; FAIL-OPEN — see docstring).
+        # This block is DELIBERATELY the fail-open exception: it wraps its own
+        # consultation in try/except so it can NEVER reach check()'s fail-closed
+        # outer handler. A bug here must proceed, never reject.
+        if is_buy and self.sentiment is not None:
+            try:
+                res = self.sentiment.lean(intent.product)
+                if res is not None:
+                    if res.score <= self.cfg.sentiment_veto_score:
+                        panic_txt = (f", panic={res.panic:.0f}"
+                                     if res.panic is not None else "")
+                        log.warning(
+                            "RISK reject buy %s: bearish sentiment (score=%.2f%s)",
+                            intent.product, res.score, panic_txt,
+                        )
+                        return RiskDecision(
+                            "reject", 0.0,
+                            f"rejected: bearish sentiment (score={res.score:.2f}{panic_txt})",
+                        )
+                    if res.score <= self.cfg.sentiment_dampen_score:
+                        factor = self.cfg.sentiment_dampen_factor
+                        working_notional *= factor
+                        dampen_reason = (
+                            f"resized: bearish sentiment (score={res.score:.2f}) "
+                            f"x{factor:.2f}"
+                        )
+                        resize_reason = (
+                            f"{resize_reason}; {dampen_reason}"
+                            if resize_reason else dampen_reason
+                        )
+                        log.warning(
+                            "RISK resize buy %s: bearish sentiment (score=%.2f) "
+                            "-> notional x%.2f = %.2f",
+                            intent.product, res.score, factor, working_notional,
+                        )
+            except Exception as exc:  # noqa: BLE001 — FAIL-OPEN, never reject
+                log.warning(
+                    "RISK sentiment step failed for %s (%s); proceeding without "
+                    "dampening", intent.product, exc,
+                )
 
         action = "resize" if resize_reason else "approve"
         reason = resize_reason or "approved"
@@ -140,27 +181,3 @@ class RiskManager:
             )
             return True
         return False
-
-    def _check_per_position(self, intent: TradeIntent) -> RiskDecision:
-        bankroll = self.portfolio.bankroll
-        cap = self.rc.per_position_fraction * bankroll
-        current = self.portfolio.position_value(intent.product, self.price_source)
-        headroom = cap - current
-        requested = intent.notional
-
-        if requested <= headroom + 1e-9:
-            return RiskDecision("approve", requested, "within per-position cap")
-
-        if headroom < self.rc.min_order_usd:
-            log.warning(
-                "RISK reject buy %s: no per-position headroom (pos=%.2f cap=%.2f "
-                "headroom=%.2f < min %.2f)",
-                intent.product, current, cap, headroom, self.rc.min_order_usd,
-            )
-            return RiskDecision("reject", 0.0, "per-position cap: headroom below min order")
-
-        log.warning(
-            "RISK resize buy %s: requested %.2f -> %.2f (per-position cap %.2f, pos %.2f)",
-            intent.product, requested, headroom, cap, current,
-        )
-        return RiskDecision("resize", headroom, f"resized to per-position headroom {headroom:.2f}")

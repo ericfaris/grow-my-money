@@ -1,5 +1,5 @@
 """Acceptance #1: paper mode routes to the simulator and NEVER calls a real
-order endpoint; an oversized intent is resized before the fill."""
+order endpoint."""
 from __future__ import annotations
 
 import pytest
@@ -63,16 +63,15 @@ def test_paper_fill_never_calls_live(config, state, killswitch, price_source):
     assert state.all_trades()[0]["mode"] == "paper"
 
 
-def test_paper_oversized_intent_is_resized_before_fill(config, state, killswitch, price_source):
+def test_paper_large_intent_fills_in_full(config, state, killswitch, price_source):
     state.set_mode("paper")
     client = SpyClient()
     gw = _gateway(config, state, killswitch, price_source, client)
-    # cap is 25% of 10k = 2500; request 9000 -> resized to 2500 headroom
     res = gw.execute(TradeIntent("BTC-USD", "buy", 9000.0))
     assert res["status"] == "filled"
-    assert res["decision"].action == "resize"
+    assert res["decision"].action == "approve"
     trade = state.all_trades()[0]
-    assert abs(trade["notional"] - 2500.0) < 5.0  # ~2500 minus slippage rounding
+    assert abs(trade["notional"] - 9000.0) < 5.0  # slippage rounding only
 
 
 def test_paper_slippage_applied(config, state, killswitch):

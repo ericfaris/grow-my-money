@@ -23,6 +23,7 @@ from .logging_setup import setup_logging
 from .model import Model
 from .portfolio import Portfolio
 from .risk import RiskManager, TradeIntent
+from .sentiment import SentimentProvider
 from .scheduler import Scheduler
 from .state import State, iso, utcnow
 
@@ -49,8 +50,11 @@ class Bot:
         self.model = Model(config, state, self.state_dir / "model.pkl")
         self.scheduler = Scheduler(config.decision_interval_min, config.daily_report_hour)
         self._price_cache: dict[str, float] = {}
+        # Fail-open news-sentiment provider; injected only when enabled. Inert
+        # (fails open) until a CryptoPanic token file is present.
+        self.sentiment = SentimentProvider(config) if config.sentiment_enabled else None
         self.risk = RiskManager(config, state, self.portfolio, self.killswitch,
-                                self.price_source)
+                                self.price_source, sentiment=self.sentiment)
         self.gateway = OrderGateway(config, state, self.risk, self.price_source,
                                     coinbase_client=coinbase_client)
 
@@ -151,6 +155,26 @@ class Bot:
                 log.warning("cycle error for %s: %s", product, exc)
         return summary
 
+    def _htf_trend(self, product: str) -> Optional[bool]:
+        """Higher-timeframe trend bit for the buy-size dampener. Fail-OPEN:
+        any failure returns None (dampener simply not applied)."""
+        try:
+            df = marketdata.fetch_candles(
+                self.client, product, self.cfg.htf_candle_granularity,
+                self.cfg.candle_limit)
+            if df.empty:
+                return None
+            f = compute_features(
+                df, ema_fast=self.cfg.ema_fast, ema_slow=self.cfg.ema_slow,
+                rsi_period=self.cfg.rsi_period, macd_fast=self.cfg.macd_fast,
+                macd_slow=self.cfg.macd_slow, macd_signal=self.cfg.macd_signal,
+                volume_avg_window=self.cfg.volume_avg_window)
+            return bool(f.ema_bullish)
+        except Exception as exc:  # noqa: BLE001 — fail-open
+            log.warning("HTF trend fetch failed for %s (%s); proceeding without "
+                        "HTF dampening", product, exc)
+            return None
+
     def _decide_product(self, product: str, now=None) -> Optional[dict]:
         df = marketdata.fetch_candles(self.client, product, self.cfg.candle_granularity,
                                       self.cfg.candle_limit)
@@ -160,6 +184,7 @@ class Bot:
             df, ema_fast=self.cfg.ema_fast, ema_slow=self.cfg.ema_slow,
             rsi_period=self.cfg.rsi_period, macd_fast=self.cfg.macd_fast,
             macd_slow=self.cfg.macd_slow, macd_signal=self.cfg.macd_signal,
+            volume_avg_window=self.cfg.volume_avg_window,
         )
         sig = signals.evaluate(product, feats, self.cfg)
 
@@ -183,12 +208,16 @@ class Bot:
             log.info("BUY suppressed %s: p_win=%.3f < %.3f (model=%s)",
                      product, p_win, self.cfg.buy_probability_threshold, tag)
             return None
+        htf_bullish = self._htf_trend(product)
+        size_factor = signals.buy_size_factor(feats.volume_ratio, htf_bullish, self.cfg)
         budget = self.cfg.per_trade_budget_fraction * self.portfolio.bankroll
         # scale by conviction over the threshold
         scale = min(1.0, (p_win - self.cfg.buy_probability_threshold)
                     / max(1e-6, 1.0 - self.cfg.buy_probability_threshold) + 0.5)
-        notional = budget * scale
-        reason = f"{sig.reason}; p_win={p_win:.3f} model={tag}"
+        notional = budget * scale * size_factor
+        htf_txt = "n/a" if htf_bullish is None else ("bull" if htf_bullish else "bear")
+        reason = (f"{sig.reason}; p_win={p_win:.3f} model={tag}; "
+                  f"vol_ratio={feats.volume_ratio:.2f} htf={htf_txt} size_x={size_factor:.2f}")
         intent = TradeIntent(product=product, side="buy", notional=notional, reason=reason)
         res = self.gateway.execute(intent, now=now)
         return {"product": product, "side": "buy", "status": res["status"],

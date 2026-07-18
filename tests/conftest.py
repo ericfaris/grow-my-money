@@ -29,7 +29,6 @@ def config():
         products=["BTC-USD", "ETH-USD", "SOL-USD"],
         risk=RiskConfig(
             portfolio_halt_fraction=0.70,
-            per_position_fraction=0.25,
             max_trades_per_24h=5,
             min_order_usd=10.0,
             halt_auto_flatten=False,

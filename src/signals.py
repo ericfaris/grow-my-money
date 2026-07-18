@@ -20,6 +20,26 @@ class Signal:
     reason: str
 
 
+def buy_size_factor(volume_ratio, htf_bullish, cfg) -> float:
+    """Multiplicative buy-size dampener in (0, 1]. 1.0 = fully confirming.
+    Volume and HTF are independent soft factors; either missing => neutral (1.0
+    for that factor). NEVER returns 0 (soft dampener, never a hard block)."""
+    factor = 1.0
+    # --- Volume confirmation ---
+    if volume_ratio is not None:
+        if volume_ratio <= cfg.volume_thin_ratio:
+            factor *= cfg.volume_thin_factor            # thin -> full dampen
+        elif volume_ratio < cfg.volume_confirm_ratio:
+            span = cfg.volume_confirm_ratio - cfg.volume_thin_ratio
+            frac = (volume_ratio - cfg.volume_thin_ratio) / span if span > 0 else 1.0
+            factor *= cfg.volume_thin_factor + frac * (1.0 - cfg.volume_thin_factor)
+        # volume_ratio >= volume_confirm_ratio -> *1.0 (full conviction)
+    # --- HTF confirmation (buy is bullish; disagreement = HTF not bullish) ---
+    if htf_bullish is not None and not htf_bullish:
+        factor *= cfg.htf_disagree_factor
+    return max(0.0, min(1.0, factor))
+
+
 def evaluate(product: str, feats: Features, cfg) -> Signal:
     """Rule logic:
       * BUY when fast EMA is above slow EMA AND MACD bullish AND RSI not overbought.
@@ -37,6 +57,8 @@ def evaluate(product: str, feats: Features, cfg) -> Signal:
     conf = max(0.0, min(1.0, 0.5 * gap_strength + 0.5 * hist_strength))
 
     if bullish and not overbought:
+        vol_factor = buy_size_factor(feats.volume_ratio, None, cfg)  # volume-only, HTF applied later in bot.py
+        conf = max(0.0, min(1.0, conf * vol_factor))
         return Signal(product, "buy", conf,
                       f"EMA{cfg.ema_fast}>EMA{cfg.ema_slow}, MACD bullish, RSI={feats.rsi:.0f}")
     if (not feats.ema_bullish) or overbought:

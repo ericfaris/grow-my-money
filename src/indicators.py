@@ -53,6 +53,7 @@ class Features:
     macd_bullish: int           # 1 if macd_line > signal
     ret_recent: float           # last-N-bar return
     volatility: float           # rolling std of returns
+    volume_ratio: float = 1.0   # current volume / trailing SMA(volume); 1.0 = neutral/unknown
 
     def to_vector(self) -> dict:
         return asdict(self)
@@ -61,7 +62,7 @@ class Features:
 def compute_features(df: pd.DataFrame, *, ema_fast: int = 12, ema_slow: int = 26,
                      rsi_period: int = 14, macd_fast: int = 12, macd_slow: int = 26,
                      macd_signal: int = 9, ret_lookback: int = 6,
-                     vol_lookback: int = 24) -> Features:
+                     vol_lookback: int = 24, volume_avg_window: int = 20) -> Features:
     """Compute the latest feature vector from a candle DataFrame.
 
     Raises ValueError if there is not enough data to compute the slow EMA.
@@ -90,6 +91,15 @@ def compute_features(df: pd.DataFrame, *, ema_fast: int = 12, ema_slow: int = 26
     if np.isnan(vol):
         vol = 0.0
 
+    volume_ratio = 1.0
+    if "volume" in df.columns and volume_avg_window > 0:
+        vol_col = df["volume"].astype(float).reset_index(drop=True)
+        if len(vol_col):
+            sma = float(vol_col.tail(volume_avg_window).mean())
+            cur = float(vol_col.iloc[-1])
+            if sma > 0 and not np.isnan(sma):
+                volume_ratio = cur / sma
+
     return Features(
         price=price,
         ema_fast=ema_f,
@@ -103,4 +113,5 @@ def compute_features(df: pd.DataFrame, *, ema_fast: int = 12, ema_slow: int = 26
         macd_bullish=1 if float(ml.iloc[-1]) > float(sl.iloc[-1]) else 0,
         ret_recent=ret_recent,
         volatility=vol,
+        volume_ratio=volume_ratio,
     )
