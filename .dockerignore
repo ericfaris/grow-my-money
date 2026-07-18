@@ -1,0 +1,10 @@
+.venv
+state
+.env
+.git
+.gitignore
+tests
+__pycache__
+*.pkl
+.pytest_cache
+.claude
