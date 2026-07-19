@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .config import load_config
 from .dashboard_data import PriceProvider, ReadOnlyState, build_payload
@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 DB_PATH = "state/grow.db"
 _INDEX_HTML = Path(__file__).parent / "dashboard_web" / "index.html"
+_FAVICON = Path(__file__).parent / "dashboard_web" / "favicon.ico"
 
 app = FastAPI(title="grow-my-money dashboard", docs_url=None, redoc_url=None)
 
@@ -34,6 +35,11 @@ _price_provider = PriceProvider(_cfg)
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     return HTMLResponse(_INDEX_HTML.read_text(encoding="utf-8"))
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    return FileResponse(_FAVICON, media_type="image/vnd.microsoft.icon")
 
 
 @app.get("/api/data")
