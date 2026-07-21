@@ -17,16 +17,43 @@ log = logging.getLogger(__name__)
 
 
 class PaperFillSimulator:
-    """Simulates a fill at the current best bid/ask +/- slippage."""
+    """Simulates a fill at the current best bid/ask +/- slippage.
 
-    def __init__(self, price_source, slippage_bps: float, fee_bps: float):
+    Slippage scales with a product's 24h volume (see ``volume_source``, wired
+    from the same discovery data used to pick the tradeable universe —
+    src/product_discovery.py). ``slippage_bps`` alone is calibrated for a
+    BTC/ETH-level book; the discovery floor now admits pairs down to
+    ~$5M/day, where a flat 5bps assumption would understate real market-order
+    slippage and make paper P&L look better than live could actually achieve.
+    Thinner volume -> larger multiplier, capped at ``max_slippage_multiplier``.
+    Unknown volume (no ``volume_source``, or it returns nothing) falls back to
+    1x — i.e. today's flat behavior, never assumed worse than that."""
+
+    def __init__(self, price_source, slippage_bps: float, fee_bps: float,
+                volume_source=None, liquidity_reference_volume: float = 50_000_000.0,
+                max_slippage_multiplier: float = 5.0):
         self.price_source = price_source
         self.slippage_bps = slippage_bps
         self.fee_bps = fee_bps
+        self.volume_source = volume_source
+        self.liquidity_reference_volume = liquidity_reference_volume
+        self.max_slippage_multiplier = max_slippage_multiplier
+
+    def _slippage_multiplier(self, product: str) -> float:
+        if self.volume_source is None:
+            return 1.0
+        try:
+            volume = self.volume_source(product)
+        except Exception:  # noqa: BLE001 — never let a lookup break a fill
+            return 1.0
+        if not volume or volume <= 0:
+            return 1.0
+        multiplier = (self.liquidity_reference_volume / volume) ** 0.5
+        return max(1.0, min(multiplier, self.max_slippage_multiplier))
 
     def fill(self, product: str, side: str, notional: float, base_size=None):
         spot = self.price_source(product)
-        slip = self.slippage_bps / 10_000.0
+        slip = (self.slippage_bps * self._slippage_multiplier(product)) / 10_000.0
         # buys pay up, sells receive down (adverse slippage)
         price = spot * (1 + slip) if side == "buy" else spot * (1 - slip)
         if side == "buy":
@@ -39,13 +66,18 @@ class PaperFillSimulator:
 
 
 class OrderGateway:
-    def __init__(self, config, state, risk_manager, price_source, coinbase_client=None):
+    def __init__(self, config, state, risk_manager, price_source, coinbase_client=None,
+                volume_source=None):
         self.cfg = config
         self.state = state
         self.risk = risk_manager
         self.price_source = price_source
         self.client = coinbase_client
-        self.sim = PaperFillSimulator(price_source, config.slippage_bps, config.fee_bps)
+        self.sim = PaperFillSimulator(
+            price_source, config.slippage_bps, config.fee_bps,
+            volume_source=volume_source,
+            liquidity_reference_volume=config.slippage_liquidity_reference_volume,
+            max_slippage_multiplier=config.slippage_max_multiplier)
 
     def execute(self, intent: TradeIntent, now=None) -> dict:
         """Risk-check then route to paper simulator or live order.

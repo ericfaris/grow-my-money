@@ -64,14 +64,18 @@ def test_paper_fill_never_calls_live(config, state, killswitch, price_source):
 
 
 def test_paper_large_intent_fills_in_full(config, state, killswitch, price_source):
+    """An intent within the per-position cap (see test_risk_per_position_cap.py
+    for cap enforcement itself) fills at its full requested notional — paper
+    execution doesn't independently truncate or mangle it."""
     state.set_mode("paper")
     client = SpyClient()
     gw = _gateway(config, state, killswitch, price_source, client)
-    res = gw.execute(TradeIntent("BTC-USD", "buy", 9000.0))
+    within_cap = config.risk.per_position_fraction * config.paper_start_bankroll * 0.5
+    res = gw.execute(TradeIntent("BTC-USD", "buy", within_cap))
     assert res["status"] == "filled"
     assert res["decision"].action == "approve"
     trade = state.all_trades()[0]
-    assert abs(trade["notional"] - 9000.0) < 5.0  # slippage rounding only
+    assert abs(trade["notional"] - within_cap) < 5.0  # slippage rounding only
 
 
 def test_paper_slippage_applied(config, state, killswitch):

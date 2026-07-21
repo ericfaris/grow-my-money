@@ -88,6 +88,16 @@ class CoinbaseClient:
                 out[cur] = 0.0
         return out
 
+    def get_products(self, quote_currency: str = "USD") -> list[dict]:
+        """All SPOT products for a quote currency, raw dicts (unfiltered aside
+        from quote currency) — see product_discovery.select_products for the
+        actual liquidity/tradeability filtering."""
+        resp = _to_dict(self._call(self.rc.get_products, product_type="SPOT"))
+        products = [_to_dict(p) for p in (resp.get("products") or [])]
+        if quote_currency:
+            products = [p for p in products if p.get("quote_currency_id") == quote_currency]
+        return products
+
     def get_spot_price(self, product_id: str) -> float:
         """Mid price from best bid/ask."""
         resp = _to_dict(self._call(self.rc.get_best_bid_ask, product_ids=[product_id]))

@@ -8,7 +8,9 @@ anchor) and reconciles any pending LIVE intents against Coinbase before acting.
 """
 from __future__ import annotations
 
+import json
 import logging
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +24,7 @@ from .killswitch import KillSwitch
 from .logging_setup import setup_logging
 from .model import Model
 from .portfolio import Portfolio
+from . import product_discovery
 from .risk import RiskManager, TradeIntent
 from .sentiment import SentimentProvider
 from .scheduler import Scheduler
@@ -45,18 +48,26 @@ class Bot:
         self.client = coinbase_client
         self.state_dir = Path(state_dir)
         self.killswitch = KillSwitch(self.state_dir / "KILL")
-        self.portfolio = Portfolio(state, config.paper_start_bankroll)
+        self.portfolio = Portfolio(state, config.paper_start_bankroll,
+                                   coinbase_client=coinbase_client)
         self.benchmark = Benchmark(state)
         self.model = Model(config, state, self.state_dir / "model.pkl")
         self.scheduler = Scheduler(config.decision_interval_min, config.daily_report_hour)
         self._price_cache: dict[str, float] = {}
+        # Dynamic product universe (see product_discovery.py). Starts as the
+        # static config fallback; _refresh_products() replaces it once
+        # discovery succeeds. Never mutated to empty — always fail open to
+        # whatever list is already here.
+        self.products: list[str] = list(config.products)
+        self.product_volumes: dict[str, float] = {}  # product_id -> approx 24h USD volume
         # Fail-open news-sentiment provider; injected only when enabled. Inert
         # (fails open) until a CryptoPanic token file is present.
         self.sentiment = SentimentProvider(config) if config.sentiment_enabled else None
         self.risk = RiskManager(config, state, self.portfolio, self.killswitch,
                                 self.price_source, sentiment=self.sentiment)
         self.gateway = OrderGateway(config, state, self.risk, self.price_source,
-                                    coinbase_client=coinbase_client)
+                                    coinbase_client=coinbase_client,
+                                    volume_source=lambda p: self.product_volumes.get(p))
 
     # -- price source shared by portfolio, risk, benchmark -----------------
     def price_source(self, product: str) -> float:
@@ -89,6 +100,26 @@ class Bot:
                  self.state.is_cap_tripped("portfolio_halt_tripped"),
                  self.killswitch.is_engaged())
         self._reconcile_pending_live()
+        self._refresh_products()
+
+    def _refresh_products(self) -> None:
+        """Re-discover the traded product universe from Coinbase's live
+        catalog (see product_discovery.py). Fail-open: any error or empty
+        result leaves self.products exactly as it was — never trades nothing
+        because a discovery call had a bad day."""
+        if not self.cfg.product_discovery_enabled or self.client is None:
+            return
+        try:
+            discovered, volumes = product_discovery.discover(
+                self.client, self.cfg.product_min_quote_volume_24h,
+                self.cfg.product_discovery_max_count)
+            log.info("Product discovery: %d products (was %d)",
+                     len(discovered), len(self.products))
+            self.products = discovered
+            self.product_volumes = volumes
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Product discovery failed (%s); keeping existing %d products",
+                        exc, len(self.products))
 
     def _reconcile_pending_live(self) -> None:
         """Before any new activity, reconcile pending LIVE intents against
@@ -123,6 +154,12 @@ class Bot:
 
         mode = self.state.get_mode("paper")
         prices = self.refresh_prices()
+        self.portfolio.refresh_live_balances()
+
+        try:
+            self._evaluate_due_outcomes(now=now)
+        except Exception as exc:  # noqa: BLE001 — report-only, never blocks trading
+            log.warning("outcome evaluation failed (%s); continuing cycle", exc)
 
         # Paper-start benchmark anchor: create on first paper cycle if absent.
         if mode == "paper":
@@ -143,7 +180,11 @@ class Bot:
             log.warning("halt evaluation failed (%s); skipping cycle", exc)
             return summary
 
-        for product in self.cfg.products:
+        # Evaluate the discovered universe, plus any open position even if its
+        # product has since dropped out of the liquidity filter — an existing
+        # position must always stay sell-evaluated, never go unmanaged.
+        cycle_products = sorted(set(self.products) | set(self.state.open_positions().keys()))
+        for product in cycle_products:
             try:
                 action = self._decide_product(product, now=now)
                 if action:
@@ -220,8 +261,66 @@ class Bot:
                   f"vol_ratio={feats.volume_ratio:.2f} htf={htf_txt} size_x={size_factor:.2f}")
         intent = TradeIntent(product=product, side="buy", notional=notional, reason=reason)
         res = self.gateway.execute(intent, now=now)
+        if res["status"] == "filled":
+            self._record_pending_outcome(product, feats, res["fill"]["price"], now=now)
         return {"product": product, "side": "buy", "status": res["status"],
                 "p_win": p_win, "reason": reason}
+
+    def _record_pending_outcome(self, product: str, feats, entry_price: float, now=None) -> None:
+        """Stash the buy's feature snapshot for horizon-based labeling later
+        (see _evaluate_due_outcomes). Decoupled from how/when the position is
+        eventually sold — this is what feeds the model's training data, so a
+        failure here must never block the trade that already filled."""
+        try:
+            now = now or utcnow()
+            due = now + timedelta(hours=self.cfg.model_horizon_hours)
+            self.state.record_pending_outcome(
+                product, iso(now), entry_price, feats.to_vector(), iso(due))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("failed to record pending outcome for %s: %s", product, exc)
+
+    def _evaluate_due_outcomes(self, now=None) -> None:
+        """Resolve any pending outcome whose horizon has elapsed into a labeled
+        row in `outcomes`, then retrain if enough new labels have accumulated.
+        Report-only w.r.t. trading: never touches an order/risk/kill path."""
+        now = now or utcnow()
+        due = self.state.due_pending_outcomes(iso(now))
+        if not due:
+            return
+        roundtrip_fee = 2 * self.cfg.fee_bps / 10_000.0
+        stale_cutoff = now - timedelta(hours=48)
+        for row in due:
+            try:
+                price = self.price_source(row["product"])
+            except Exception as exc:  # noqa: BLE001
+                if row["due_ts_utc"] < iso(stale_cutoff):
+                    log.warning("dropping stale pending outcome %s (%s): %s",
+                                row["id"], row["product"], exc)
+                    self.state.delete_pending_outcome(row["id"])
+                continue
+            try:
+                pnl_pct = (price - row["entry_price"]) / row["entry_price"]
+                label = 1 if pnl_pct > roundtrip_fee else 0
+                self.state.record_outcome(
+                    row["product"], row["entry_ts_utc"], json.loads(row["features_json"]),
+                    label, pnl_pct - roundtrip_fee)
+                self.state.delete_pending_outcome(row["id"])
+            except Exception as exc:  # noqa: BLE001
+                log.warning("failed to resolve pending outcome %s: %s", row["id"], exc)
+
+        try:
+            self._maybe_trigger_retrain()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("retrain trigger check failed: %s", exc)
+
+    def _maybe_trigger_retrain(self) -> None:
+        n = self.state.outcome_count()
+        last = int(self.state.get_runtime("outcomes_at_last_retrain", "0"))
+        if n - last >= self.cfg.retrain_every_n_closed_trades:
+            log.info("Retrain trigger: %d new outcomes since last retrain (threshold %d)",
+                      n - last, self.cfg.retrain_every_n_closed_trades)
+            self.model.maybe_retrain()
+            self.state.set_runtime("outcomes_at_last_retrain", n)
 
     def _flatten_all(self, now=None) -> list[dict]:
         """Emergency de-risk: sell every open position to cash. Each sell routes
@@ -260,6 +359,7 @@ class Bot:
             self.model.maybe_retrain()
         except Exception as exc:  # noqa: BLE001
             log.warning("nightly retrain failed: %s", exc)
+        self._refresh_products()
 
     # -- run loop ----------------------------------------------------------
     def run(self, once: bool = False) -> None:

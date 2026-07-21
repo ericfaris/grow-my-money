@@ -61,6 +61,7 @@ class RiskConfig:
     """Hard safety caps. All order intents pass through these thresholds."""
 
     portfolio_halt_fraction: float = 0.70
+    per_position_fraction: float = 0.25
     max_trades_per_24h: int = 5
     min_order_usd: float = 10.0
     halt_auto_flatten: bool = False
@@ -68,6 +69,8 @@ class RiskConfig:
     def validate(self) -> None:
         if not (0.0 < self.portfolio_halt_fraction < 1.0):
             raise ValueError("PORTFOLIO_HALT_FRACTION must be in (0,1)")
+        if not (0.0 < self.per_position_fraction <= 1.0):
+            raise ValueError("PER_POSITION_FRACTION must be in (0,1]")
         if self.max_trades_per_24h < 0:
             raise ValueError("MAX_TRADES_PER_24H must be >= 0")
         if self.min_order_usd < 0:
@@ -83,10 +86,23 @@ class Config:
     candle_granularity: str = "ONE_HOUR"
     candle_limit: int = 300
 
+    # Dynamic product-universe discovery (see product_discovery.py). When
+    # enabled, `products` above is only the first-run/failure-fallback list —
+    # the bot's actual traded universe is refreshed from Coinbase's live
+    # catalog at startup and nightly, gated on 24h USD volume.
+    product_discovery_enabled: bool = True
+    product_min_quote_volume_24h: float = 5_000_000.0
+    product_discovery_max_count: int = 40
+
     decision_interval_min: int = 30
     daily_report_hour: int = 8
 
     slippage_bps: float = 5.0
+    # Liquidity scaling for paper slippage (see execution.PaperFillSimulator):
+    # multiplier = sqrt(reference_volume / product_volume), clamped to
+    # [1, max_multiplier]. Calibrated so BTC/ETH-level volume gets ~1x.
+    slippage_liquidity_reference_volume: float = 50_000_000.0
+    slippage_max_multiplier: float = 5.0
     fee_bps: float = 60.0
     per_trade_budget_fraction: float = 0.10
 
@@ -158,9 +174,13 @@ def load_config(env: dict | None = None, use_dotenv: bool = True) -> Config:
         env = dict(os.environ)
 
     products = [p.strip() for p in _get(env, "PRODUCTS", "BTC-USD,ETH-USD,SOL-USD").split(",") if p.strip()]
+    product_discovery_enabled = _get_bool(env, "PRODUCT_DISCOVERY_ENABLED", True)
+    product_min_quote_volume_24h = _get_float(env, "PRODUCT_MIN_QUOTE_VOLUME_24H", 5_000_000.0)
+    product_discovery_max_count = _get_int(env, "PRODUCT_DISCOVERY_MAX_COUNT", 40)
 
     risk = RiskConfig(
         portfolio_halt_fraction=_get_float(env, "PORTFOLIO_HALT_FRACTION", 0.70),
+        per_position_fraction=_get_float(env, "PER_POSITION_FRACTION", 0.25),
         max_trades_per_24h=_get_int(env, "MAX_TRADES_PER_24H", 5),
         min_order_usd=_get_float(env, "MIN_ORDER_USD", 10.0),
         halt_auto_flatten=_get_bool(env, "HALT_AUTO_FLATTEN", False),
@@ -170,11 +190,17 @@ def load_config(env: dict | None = None, use_dotenv: bool = True) -> Config:
         mode=_coerce_mode(env.get("MODE")),
         paper_start_bankroll=_get_float(env, "PAPER_START_BANKROLL", 10_000.0),
         products=products,
+        product_discovery_enabled=product_discovery_enabled,
+        product_min_quote_volume_24h=product_min_quote_volume_24h,
+        product_discovery_max_count=product_discovery_max_count,
         candle_granularity=_get(env, "CANDLE_GRANULARITY", "ONE_HOUR"),
         candle_limit=_get_int(env, "CANDLE_LIMIT", 300),
         decision_interval_min=_get_int(env, "DECISION_INTERVAL_MIN", 30),
         daily_report_hour=_get_int(env, "DAILY_REPORT_HOUR", 8),
         slippage_bps=_get_float(env, "SLIPPAGE_BPS", 5.0),
+        slippage_liquidity_reference_volume=_get_float(
+            env, "SLIPPAGE_LIQUIDITY_REFERENCE_VOLUME", 50_000_000.0),
+        slippage_max_multiplier=_get_float(env, "SLIPPAGE_MAX_MULTIPLIER", 5.0),
         fee_bps=_get_float(env, "FEE_BPS", 60.0),
         per_trade_budget_fraction=_get_float(env, "PER_TRADE_BUDGET_FRACTION", 0.10),
         model_horizon_hours=_get_int(env, "MODEL_HORIZON_HOURS", 6),

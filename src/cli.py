@@ -32,6 +32,85 @@ def _open_state() -> State:
     return State(DB_PATH)
 
 
+def _total_account_value_usd(balances: dict, price_source, warn=print) -> float:
+    """Sum USD cash + every other nonzero currency priced at spot. A currency
+    that can't be priced is excluded (warned, not fatal) rather than aborting
+    the whole go-live. Does NOT see staked balances — Coinbase's
+    available_balance excludes them entirely; see the caller's note."""
+    total = float(balances.get("USD", 0.0))
+    for cur, amount in balances.items():
+        if cur == "USD" or amount <= 0:
+            continue
+        try:
+            price = price_source(f"{cur}-USD")
+        except Exception as exc:  # noqa: BLE001
+            warn(f"Warning: could not price {cur} ({exc}); excluded from bankroll.")
+            continue
+        total += amount * price
+    return total
+
+
+def _seed_paper_from_balances(state, balances: dict, price_source, now_iso: str,
+                              warn=print) -> dict:
+    """Seed paper positions from real (non-staked) account balances, and
+    paper_cash from the real USD balance — mirrors what a live go-live would
+    actually inherit on day one, instead of starting from undifferentiated
+    cash. Deliberately NOT a fill: writes no trades/intents row (see
+    State.seed_position). A currency that can't be priced is excluded
+    (warned, not fatal). Returns a summary dict for the caller to print."""
+    seeded = []
+    for cur, amount in balances.items():
+        if cur == "USD" or amount <= 0:
+            continue
+        product = f"{cur}-USD"
+        try:
+            price = price_source(product)
+        except Exception as exc:  # noqa: BLE001
+            warn(f"Warning: could not price {cur} ({exc}); excluded from seed.")
+            continue
+        state.seed_position(product, amount, price, now_iso)
+        seeded.append({"product": product, "base_size": amount, "avg_entry": price,
+                       "value": amount * price})
+    usd_cash = float(balances.get("USD", 0.0))
+    state.set_runtime("paper_cash", usd_cash)
+    return {"seeded": seeded, "cash": usd_cash}
+
+
+def cmd_seed_from_account(args) -> int:
+    state = _open_state()
+    if state.get_mode("paper") != "paper":
+        print("Refusing to seed: mode is not paper.")
+        return 1
+    if state.open_positions() or state.all_trades():
+        print("Refusing to seed: this db already has positions or trade history "
+              "(seed-from-account is for a fresh epoch only — wipe state first).")
+        return 1
+
+    cfg = load_config()
+    try:
+        from . import secrets as secrets_mod
+        from .coinbase_client import CoinbaseClient
+        key_path = secrets_mod.coinbase_key_path(cfg.coinbase_key_file or None)
+        client = CoinbaseClient.from_key_file(key_path)
+        balances = client.get_balances()
+    except Exception as exc:  # noqa: BLE001
+        print(f"Cannot seed: Coinbase key/balance check failed ({exc}).")
+        return 1
+
+    result = _seed_paper_from_balances(state, balances, client.get_spot_price, iso(utcnow()))
+    print("Seeded paper positions from real account balances "
+          "(entry price = spot at seed time — no real cost-basis data available; "
+          "NOTE: staked holdings are invisible to this API and are NOT seeded):")
+    total = result["cash"]
+    for row in result["seeded"]:
+        print(f"  {row['product']:10} base={row['base_size']:.6f}  "
+              f"entry=${row['avg_entry']:,.4f}  value=${row['value']:,.2f}")
+        total += row["value"]
+    print(f"  {'cash':10} ${result['cash']:,.2f}")
+    print(f"  {'TOTAL':10} ${total:,.2f}")
+    return 0
+
+
 def cmd_run(args) -> int:
     from .bot import build_bot
     bot = build_bot(with_client=True)
@@ -95,7 +174,6 @@ def cmd_set_mode(args) -> int:
         print(f"Cannot go live: Coinbase key/balance check failed ({exc}).")
         return 1
 
-    usd = float(balances.get("USD", 0.0))
     prices = {}
     for p in BENCH_PRODUCTS:
         try:
@@ -104,7 +182,17 @@ def cmd_set_mode(args) -> int:
             print(f"Cannot go live: price fetch failed for {p} ({exc}).")
             return 1
 
-    go_live_bankroll = usd  # baseline capital = current USD balance
+    # Baseline capital = total account value, not just the USD cash line — a
+    # balance sitting in BTC/ETH/etc. (as opposed to USD) is still bankroll.
+    # NOTE: this only sees what Coinbase's `available_balance` reports, which
+    # excludes STAKED holdings (e.g. staked ETH/DOT/ADA) entirely — the
+    # Advanced Trade API does not expose staked balances. If you hold staked
+    # assets, verify the true total manually (Coinbase app) before going live;
+    # this number will undercount.
+    def _price_source(product_id):
+        return prices.get(product_id) or client.get_spot_price(product_id)
+
+    go_live_bankroll = _total_account_value_usd(balances, _price_source)
     now = iso(utcnow())
     state.set_mode("live")
     state.set_runtime("go_live_bankroll", go_live_bankroll)
@@ -125,7 +213,7 @@ def _price_source_from_client(client):
 
 def _print_status(state, cfg, client=None) -> None:
     mode = state.get_mode("paper")
-    portfolio = Portfolio(state, cfg.paper_start_bankroll)
+    portfolio = Portfolio(state, cfg.paper_start_bankroll, coinbase_client=client)
     benchmark = Benchmark(state)
     print(f"mode: {mode}")
     print(f"kill switch: {'ENGAGED' if KillSwitch(KILL_PATH).is_engaged() else 'clear'}")
@@ -217,6 +305,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stop", help="engage the kill switch").set_defaults(func=cmd_stop)
     sub.add_parser("resume", help="clear kill switch + halt trip").set_defaults(func=cmd_resume)
     sub.add_parser("status", help="print mode, caps, positions, benchmark").set_defaults(func=cmd_status)
+    sub.add_parser("seed-from-account",
+                   help="seed a fresh paper epoch with real (non-staked) account holdings"
+                   ).set_defaults(func=cmd_seed_from_account)
 
     sm = sub.add_parser("set-mode", help="switch paper/live (live needs confirmation)")
     sm.add_argument("mode", choices=["paper", "live"])

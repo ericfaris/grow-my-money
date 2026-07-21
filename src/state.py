@@ -57,6 +57,15 @@ CREATE TABLE IF NOT EXISTS outcomes (
   realized_pnl REAL
 );
 
+CREATE TABLE IF NOT EXISTS pending_outcomes (
+  id INTEGER PRIMARY KEY,
+  product TEXT NOT NULL,
+  entry_ts_utc TEXT NOT NULL,
+  entry_price REAL NOT NULL,
+  features_json TEXT NOT NULL,
+  due_ts_utc TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS benchmark (
   epoch TEXT PRIMARY KEY,
   anchor_ts_utc TEXT NOT NULL,
@@ -245,6 +254,26 @@ class State:
                 (product, new_size, new_avg, ts),
             )
 
+    def seed_position(self, product: str, base_size: float, avg_entry: float,
+                      opened_ts_utc: str) -> None:
+        """Seed a starting position directly (e.g. mirroring real pre-existing
+        account holdings on a fresh paper epoch) — deliberately NOT a fill:
+        writes no `trades`/`intents` row, since this isn't a decision the bot
+        made and must not pollute the trade-count cap or outcome tracking.
+        INSERT-if-absent only; refuses to overwrite an existing position so a
+        fresh-epoch seed can never silently clobber real trading history."""
+        existing = self.conn.execute(
+            "SELECT 1 FROM positions WHERE product=?", (product,)
+        ).fetchone()
+        if existing:
+            raise ValueError(f"position already exists for {product}; refusing to overwrite")
+        self.conn.execute(
+            "INSERT INTO positions(product,base_size,avg_entry,opened_ts_utc) "
+            "VALUES(?,?,?,?)",
+            (product, base_size, avg_entry, opened_ts_utc),
+        )
+        self.conn.commit()
+
     def open_positions(self) -> dict[str, dict]:
         rows = self.conn.execute("SELECT * FROM positions").fetchall()
         return {
@@ -302,6 +331,28 @@ class State:
         return int(
             self.conn.execute("SELECT COUNT(*) AS n FROM outcomes").fetchone()["n"]
         )
+
+    # -- pending outcomes (horizon-based labeling, decoupled from sells) ---
+    def record_pending_outcome(
+        self, product: str, entry_ts_utc: str, entry_price: float, features: dict,
+        due_ts_utc: str,
+    ) -> None:
+        self.conn.execute(
+            "INSERT INTO pending_outcomes(product,entry_ts_utc,entry_price,features_json,"
+            "due_ts_utc) VALUES(?,?,?,?,?)",
+            (product, entry_ts_utc, entry_price, json.dumps(features), due_ts_utc),
+        )
+        self.conn.commit()
+
+    def due_pending_outcomes(self, now_ts_utc: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM pending_outcomes WHERE due_ts_utc <= ? ORDER BY due_ts_utc",
+            (now_ts_utc,),
+        ).fetchall()
+
+    def delete_pending_outcome(self, row_id: int) -> None:
+        self.conn.execute("DELETE FROM pending_outcomes WHERE id=?", (row_id,))
+        self.conn.commit()
 
     def record_model_meta(
         self, trained_at_utc: str, n_samples: int, holdout_logloss: float, promoted: bool
