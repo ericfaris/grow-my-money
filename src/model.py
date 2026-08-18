@@ -27,8 +27,13 @@ from .state import iso, utcnow
 log = logging.getLogger(__name__)
 
 # Ordered numeric feature names fed to the model.
-FEATURE_KEYS = ["ema_gap_pct", "ema_bullish", "rsi", "macd_hist", "macd_bullish",
-                "ret_recent", "volatility"]
+#
+# ema_bullish/macd_bullish are deliberately excluded: signals.evaluate() only
+# ever proposes a buy when both are already true, so every training example
+# has them constant at 1 — zero variance, zero information, pure noise in the
+# scaler. (Verified against 113 live outcomes on 2026-08-17: both columns were
+# 1.0 for every single row, wins and losses alike.)
+FEATURE_KEYS = ["ema_gap_pct", "rsi", "macd_hist", "ret_recent", "volatility"]
 
 
 def features_to_row(feats) -> list[float]:
