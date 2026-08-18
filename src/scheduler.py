@@ -21,14 +21,20 @@ class Scheduler:
         self._last_report_date = None
 
     def sleep_interval(self, should_stop=None, slice_s: float = 5.0) -> None:
-        """Sleep one decision interval, waking early if should_stop() is True."""
+        """Sleep one decision interval, waking early if should_stop() becomes True.
+
+        Always sleeps at least one slice before the first should_stop() check —
+        checking before sleeping meant a kill switch already engaged at entry
+        (e.g. the whole time the bot is paused) made this return instantly every
+        call, busy-looping run_cycle()/sleep_interval() with no delay at all.
+        """
         waited = 0.0
         while waited < self.interval_s:
-            if should_stop and should_stop():
-                return
             chunk = min(slice_s, self.interval_s - waited)
             time.sleep(chunk)
             waited += chunk
+            if should_stop and should_stop():
+                return
 
     def due_for_daily(self, now: datetime | None = None) -> bool:
         """True at most once per calendar day, at/after the report hour (local)."""
