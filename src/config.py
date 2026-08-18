@@ -106,11 +106,27 @@ class Config:
     fee_bps: float = 60.0
     per_trade_budget_fraction: float = 0.10
 
-    model_horizon_hours: int = 6
-    buy_probability_threshold: float = 0.55
+    model_horizon_hours: int = 24
+    buy_probability_threshold: float = 0.65
     model_min_train_samples: int = 40
     retrain_every_n_closed_trades: int = 10
     model_promote_max_regression: float = 0.02
+
+    # Minimum time a position must be held before an ordinary (non-flatten)
+    # sell signal is allowed to close it. Without this, a cross-down/RSI exit
+    # can fire in the very next decision cycle after entry — a whipsaw that
+    # pays the ~round-trip fee for a move that never had time to develop.
+    # Emergency de-risk (flatten) sells are exempt; this only throttles the
+    # ordinary signal-driven exit path.
+    min_hold_hours: float = 4.0
+
+    # Reject buys on products whose recent hourly-return volatility (rolling
+    # std, see indicators.Features.volatility) is above this — a liquidity/
+    # data-quality screen on top of the 24h-volume floor. Products that clear
+    # the volume bar but still swing wildly tend to produce outsized single-
+    # trade losses (see ERA-USD, -7% to -12.6% per trade) that a volume floor
+    # alone doesn't catch.
+    max_buy_volatility: float = 0.03
 
     ema_fast: int = 12
     ema_slow: int = 26
@@ -203,11 +219,13 @@ def load_config(env: dict | None = None, use_dotenv: bool = True) -> Config:
         slippage_max_multiplier=_get_float(env, "SLIPPAGE_MAX_MULTIPLIER", 5.0),
         fee_bps=_get_float(env, "FEE_BPS", 60.0),
         per_trade_budget_fraction=_get_float(env, "PER_TRADE_BUDGET_FRACTION", 0.10),
-        model_horizon_hours=_get_int(env, "MODEL_HORIZON_HOURS", 6),
-        buy_probability_threshold=_get_float(env, "BUY_PROBABILITY_THRESHOLD", 0.55),
+        model_horizon_hours=_get_int(env, "MODEL_HORIZON_HOURS", 24),
+        buy_probability_threshold=_get_float(env, "BUY_PROBABILITY_THRESHOLD", 0.65),
         model_min_train_samples=_get_int(env, "MODEL_MIN_TRAIN_SAMPLES", 40),
         retrain_every_n_closed_trades=_get_int(env, "RETRAIN_EVERY_N_CLOSED_TRADES", 10),
         model_promote_max_regression=_get_float(env, "MODEL_PROMOTE_MAX_REGRESSION", 0.02),
+        min_hold_hours=_get_float(env, "MIN_HOLD_HOURS", 4.0),
+        max_buy_volatility=_get_float(env, "MAX_BUY_VOLATILITY", 0.03),
         ema_fast=_get_int(env, "EMA_FAST", 12),
         ema_slow=_get_int(env, "EMA_SLOW", 26),
         rsi_period=_get_int(env, "RSI_PERIOD", 14),

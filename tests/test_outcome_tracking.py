@@ -77,11 +77,29 @@ def test_due_outcome_resolves_win_when_price_clears_roundtrip_fee(bot, state, co
     assert state.due_pending_outcomes(iso(now)) == []
 
 
-def test_due_outcome_resolves_loss_when_price_does_not_clear_fee(bot, state, config):
+def test_due_outcome_labels_on_raw_direction_not_fee_coverage(bot, state, config):
+    """Label is the raw up/down direction, not "beat the round-trip fee". Gating
+    the label itself on the fee meant every outcome landed label=0 whenever the
+    signal's typical edge fell short of ~1.2%, so the classifier could never see
+    both classes and was permanently stuck cold-start. realized_pnl still nets
+    out the fee for reporting; only the label changed."""
     now = utcnow()
     entry = now - timedelta(hours=config.model_horizon_hours, minutes=1)
     state.record_pending_outcome("BTC-USD", iso(entry), 100.0, _feat().to_vector(), iso(now))
     bot.price_source = lambda product: 100.5  # up, but not enough to clear round-trip fee
+
+    bot._evaluate_due_outcomes(now=now)
+
+    outcome = state.all_outcomes()[0]
+    assert outcome["label"] == 1
+    assert outcome["realized_pnl"] < 0  # still net-negative after fees
+
+
+def test_due_outcome_resolves_loss_on_negative_move(bot, state, config):
+    now = utcnow()
+    entry = now - timedelta(hours=config.model_horizon_hours, minutes=1)
+    state.record_pending_outcome("BTC-USD", iso(entry), 100.0, _feat().to_vector(), iso(now))
+    bot.price_source = lambda product: 99.0  # down
 
     bot._evaluate_due_outcomes(now=now)
 

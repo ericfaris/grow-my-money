@@ -112,6 +112,22 @@ class RiskManager:
             working_notional = intent.notional
             resize_reason = ""
 
+        # 3.5) Cash sufficiency (buys, paper only). Live orders self-limit at
+        # the exchange (an over-budget market buy is simply rejected there);
+        # portfolio.cash in live mode is display-only and fails soft to 0.0 on
+        # a fetch glitch, so gating live buys on it here would be unsafe.
+        # Without this, the per-trade budget is a fixed fraction of the
+        # ORIGINAL bankroll (see bot.py), not of remaining cash — nothing
+        # else stops repeated buys from driving paper cash negative.
+        if is_buy and self.state.get_mode("paper") == "paper":
+            cash_checked = self._check_cash(working_notional, intent.product)
+            if cash_checked.action == "reject":
+                return cash_checked
+            if cash_checked.action == "resize":
+                working_notional = cash_checked.adjusted_notional
+                resize_reason = (f"{resize_reason}; {cash_checked.reason}"
+                                  if resize_reason else cash_checked.reason)
+
         # 4) Rolling-24h trade-count cap. Flatten sells are exempt.
         if not (intent.is_flatten and not is_buy):
             count = self.state.trades_in_last_24h(now=now)
@@ -234,3 +250,26 @@ class RiskManager:
             intent.product, requested, headroom, cap, current,
         )
         return RiskDecision("resize", headroom, f"resized to per-position headroom {headroom:.2f}")
+
+    def _check_cash(self, notional: float, product: str) -> RiskDecision:
+        available = self.portfolio.cash
+        fee_rate = self.cfg.fee_bps / 10_000.0
+        required = notional * (1.0 + fee_rate)
+
+        if required <= available + 1e-9:
+            return RiskDecision("approve", notional, "within available cash")
+
+        max_notional = available / (1.0 + fee_rate)
+        if max_notional < self.rc.min_order_usd:
+            log.warning(
+                "RISK reject buy %s: insufficient paper cash (available=%.2f, "
+                "required=%.2f)", product, available, required,
+            )
+            return RiskDecision("reject", 0.0, "insufficient paper cash")
+
+        log.warning(
+            "RISK resize buy %s: requested %.2f -> %.2f (paper cash available %.2f)",
+            product, notional, max_notional, available,
+        )
+        return RiskDecision(
+            "resize", max_notional, f"resized to available cash {max_notional:.2f}")

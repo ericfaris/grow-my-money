@@ -43,6 +43,10 @@ class _Portfolio:
     def bankroll(self):
         return self.p.bankroll
 
+    @property
+    def cash(self):
+        return self.p.cash
+
     def position_value(self, product, ps):
         return self.p.position_value(product, ps)
 

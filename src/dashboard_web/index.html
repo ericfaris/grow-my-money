@@ -97,6 +97,9 @@
   .kpi .value.small { font-size: 21px; }
   .kpi .foot { color: var(--text-2); font-size: 12.5px; margin-top: 3px; }
   .pos { color: var(--good-text); } .neg { color: var(--critical); }
+  .kpi.hero { grid-column: span 2; }
+  .kpi.hero .value { font-size: 30px; }
+  @media (max-width: 560px) { .kpi.hero { grid-column: span 1; } }
 
   section { margin-bottom: 22px; }
   section > h2 {
@@ -164,10 +167,10 @@
   <div id="err"></div>
 
   <div class="grid-kpi">
+    <div class="card kpi hero"><div class="label">Bot vs. buy &amp; hold</div><div class="value" id="kpi-delta">—</div><div class="foot" id="kpi-baseline">&nbsp;</div></div>
     <div class="card kpi"><div class="label">Total value</div><div class="value" id="kpi-total">—</div><div class="foot" id="kpi-bankroll">&nbsp;</div></div>
     <div class="card kpi"><div class="label">Cash</div><div class="value" id="kpi-cash">—</div><div class="foot" id="kpi-posval">&nbsp;</div></div>
     <div class="card kpi"><div class="label">Bot return</div><div class="value small" id="kpi-return">—</div><div class="foot" id="kpi-actualval">&nbsp;</div></div>
-    <div class="card kpi"><div class="label">vs buy &amp; hold</div><div class="value small" id="kpi-delta">—</div><div class="foot" id="kpi-baseline">&nbsp;</div></div>
     <div class="card kpi"><div class="label">Trade cost</div><div class="value small" id="kpi-fees">—</div><div class="foot" id="kpi-fees-foot">&nbsp;</div></div>
   </div>
 
@@ -240,6 +243,12 @@
   }
   function num(v, d) { if (v === null || v === undefined) return "n/a"; return v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }); }
   function signClass(v) { if (v === null || v === undefined) return ""; return v > 0 ? "pos" : (v < 0 ? "neg" : ""); }
+  function deltaText(v) {
+    if (v === null || v === undefined) return "n/a";
+    if (v === 0) return "even with buy & hold";
+    var word = v > 0 ? "better" : "worse";
+    return (Math.abs(v) * 100).toFixed(2) + "% " + word;
+  }
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
   function shortTs(ts) { if (!ts) return "—"; var d = new Date(ts); if (isNaN(d)) return esc(ts); return d.toISOString().replace("T", " ").slice(0, 19); }
   function clockTs(ts) { if (!ts) return "—"; var d = new Date(ts); if (isNaN(d)) return esc(ts); return d.toISOString().slice(11, 19) + "Z"; }
@@ -278,8 +287,8 @@
     ret.textContent = pct(b.actual_return_pct); ret.className = "value small " + signClass(b.actual_return_pct);
     document.getElementById("kpi-actualval").textContent = usd(b.actual_value);
     var delta = document.getElementById("kpi-delta");
-    delta.textContent = pct(b.delta_pct); delta.className = "value small " + signClass(b.delta_pct);
-    document.getElementById("kpi-baseline").textContent = "baseline " + usd(b.baseline_value) + " (" + pct(b.baseline_return_pct) + ")";
+    delta.textContent = deltaText(b.delta_pct); delta.className = "value " + signClass(b.delta_pct);
+    document.getElementById("kpi-baseline").textContent = "buy & hold " + pct(b.baseline_return_pct) + " · bot " + pct(b.actual_return_pct);
 
     renderPositions(p.positions || []);
     renderActivity(d.activity || []);

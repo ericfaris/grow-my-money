@@ -256,9 +256,16 @@ def reconstruct_equity(
     A starting anchor point at ``start_bankroll`` is prepended and a final
     mark-to-market point at ``generated_at`` (equal to ``current_total`` when
     provided) is appended. Empty trades ⇒ a flat two-point line.
+
+    Trades strictly before ``anchor_ts`` are dropped: an anchor marks a fresh
+    epoch (e.g. a capital reset), and replaying pre-anchor trades on top of the
+    new ``start_bankroll`` would both misstate cash and emit points that sort
+    earlier than the anchor itself, breaking the ascending-ts line.
     """
     rows = list(trades)
     rows.sort(key=lambda t: t["ts_utc"])
+    if anchor_ts is not None:
+        rows = [t for t in rows if t["ts_utc"] >= anchor_ts]
 
     gen_ts = generated_at or _iso(_utcnow())
     first_ts = rows[0]["ts_utc"] if rows else gen_ts
@@ -283,7 +290,9 @@ def reconstruct_equity(
             cash += (notional - fee)
             holdings[product] = holdings.get(product, 0.0) - base_size
         last_price[product] = price
-        value = cash + sum(holdings.get(p, 0.0) * last_price[p] for p in holdings)
+        value = cash + sum(
+            holdings.get(p, 0.0) * current_prices.get(p, last_price[p]) for p in holdings
+        )
         points.append({"ts": t["ts_utc"], "value": value})
 
     if current_total is not None:
@@ -459,15 +468,26 @@ def build_payload(cfg, ro_state: ReadOnlyState, price_provider: PriceProvider) -
     # Equity curve.
     try:
         anchor = ro_state.get_benchmark_anchor(mode)
-        if mode == "live":
+        if anchor is not None:
+            start_bankroll = float(anchor["start_bankroll"])
+        elif mode == "live":
             raw = ro_state.get_runtime("go_live_bankroll")
             start_bankroll = float(raw) if raw is not None else cfg.paper_start_bankroll
         else:
             start_bankroll = cfg.paper_start_bankroll
         anchor_ts = anchor["anchor_ts_utc"] if anchor else None
         current_total = payload["portfolio"]["total_value"] if payload["portfolio"] else None
+        all_trades = ro_state.all_trades()
+        # Mark every traded product to its current price, not just the three
+        # benchmark products in `prices` — otherwise non-benchmark holdings sit
+        # frozen at their last trade price for every point except the final
+        # one (which uses portfolio.total_value's live fetch), producing a
+        # curve that's flat until a sudden jump at the very end.
+        equity_prices = dict(prices)
+        for product in {t["product"] for t in all_trades} - equity_prices.keys():
+            equity_prices[product], _ = price_provider.get(product, ro_state)
         payload["equity"] = reconstruct_equity(
-            ro_state.all_trades(), start_bankroll, prices,
+            all_trades, start_bankroll, equity_prices,
             anchor_ts=anchor_ts, generated_at=generated_at, current_total=current_total,
         )
     except Exception as exc:  # noqa: BLE001

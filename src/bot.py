@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -236,6 +236,19 @@ class Bot:
             pos = self.state.open_positions().get(product)
             if not pos or pos["base_size"] <= 0:
                 return None  # nothing to sell; never gated by model
+            opened = pos.get("opened_ts_utc")
+            if opened:
+                held_hours = ((now or utcnow()) - datetime.fromisoformat(opened)).total_seconds() / 3600.0
+                if held_hours < self.cfg.min_hold_hours:
+                    # Ordinary (non-flatten) exit signal firing before the
+                    # position has had time to develop is a whipsaw, not a
+                    # real reversal call — it just pays the round-trip fee
+                    # for a move that never got a chance to happen. Emergency
+                    # de-risk (flatten) sells are a separate code path and are
+                    # NOT subject to this throttle.
+                    log.info("SELL suppressed %s: held %.1fh < min hold %.1fh",
+                             product, held_hours, self.cfg.min_hold_hours)
+                    return None
             intent = TradeIntent(product=product, side="sell",
                                  notional=pos["base_size"] * feats.price,
                                  base_size=pos["base_size"], reason=sig.reason)
@@ -243,13 +256,25 @@ class Bot:
             return {"product": product, "side": "sell", "status": res["status"],
                     "reason": sig.reason}
 
-        # BUY: model gate + size scaling
+        # BUY: liquidity/data-quality screen, then model gate + size scaling
+        if feats.volatility > self.cfg.max_buy_volatility:
+            log.info("BUY suppressed %s: volatility %.4f > max %.4f",
+                     product, feats.volatility, self.cfg.max_buy_volatility)
+            return None
         p_win, tag = self.model.predict_p_win(feats)
         if p_win < self.cfg.buy_probability_threshold:
             log.info("BUY suppressed %s: p_win=%.3f < %.3f (model=%s)",
                      product, p_win, self.cfg.buy_probability_threshold, tag)
             return None
         htf_bullish = self._htf_trend(product)
+        if htf_bullish is False:
+            # Hard-gate on higher-timeframe trend instead of just dampening size.
+            # Every closed trade so far lost regardless of how strong the local
+            # RSI/EMA-gap confirmation was (losses at RSI 55 and RSI 70 alike),
+            # which points at broader-trend headwind rather than a bad local
+            # entry. A soft 0.5x dampener still let the bot buy into that.
+            log.info("BUY suppressed %s: HTF trend bearish", product)
+            return None
         size_factor = signals.buy_size_factor(feats.volume_ratio, htf_bullish, self.cfg)
         budget = self.cfg.per_trade_budget_fraction * self.portfolio.bankroll
         # scale by conviction over the threshold
@@ -300,7 +325,13 @@ class Bot:
                 continue
             try:
                 pnl_pct = (price - row["entry_price"]) / row["entry_price"]
-                label = 1 if pnl_pct > roundtrip_fee else 0
+                # Label on raw direction, not on beating the fee. Gating the label
+                # itself on roundtrip_fee meant "wins" required clearing ~1.2%
+                # inside the horizon; with this signal's typical edge, that never
+                # happened, every outcome landed label=0, and the classifier could
+                # never train (needs both classes). The fee threshold still lives
+                # at decision time via buy_probability_threshold.
+                label = 1 if pnl_pct > 0 else 0
                 self.state.record_outcome(
                     row["product"], row["entry_ts_utc"], json.loads(row["features_json"]),
                     label, pnl_pct - roundtrip_fee)
