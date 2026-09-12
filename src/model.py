@@ -106,6 +106,9 @@ class Model:
 
     # -- training / retrain with promotion guard ---------------------------
     def _fit(self, rows: list[dict]):
+        import warnings
+
+        from scipy.optimize import OptimizeWarning
         from sklearn.linear_model import LogisticRegression
         from sklearn.preprocessing import StandardScaler
         from sklearn.pipeline import Pipeline
@@ -116,7 +119,15 @@ class Model:
             ("scale", StandardScaler()),
             ("lr", LogisticRegression(max_iter=1000, C=1.0)),
         ])
-        pipe.fit(X, y)
+        # sklearn's LBFGS driver passes a stale `iprint` option to scipy's
+        # optimize.minimize that newer scipy releases no longer recognize for
+        # method="L-BFGS-B". It's a harmless upstream sklearn/scipy
+        # compatibility wart (the fit still completes normally) but it prints
+        # an unprefixed raw warning to stderr on every retrain cycle, which
+        # looks like a hot error loop in the logs. Silence it here.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=OptimizeWarning)
+            pipe.fit(X, y)
         return pipe
 
     @staticmethod
