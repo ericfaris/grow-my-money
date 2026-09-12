@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# Debian security patches Docker Hub hasn't rebuilt this tag with yet.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 # Non-root runtime user (uid 1000), matching the compose `user:` and the
 # bind-mounted state dir ownership on the host.
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app
