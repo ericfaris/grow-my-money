@@ -18,6 +18,7 @@ all reach the same conclusion:
 | 3 | Offline: added BTC-relative + cross-sectional features | Still no edge — AUC 0.52 at best, logloss lost to a coin flip in every fold |
 | 4 | Live 6h/96h regime (current, deployed 2026-08-18) | Looked promising 2026-09-04 (+20.4%, first promoted model, logloss 0.50) — promotion's own live picks then went **15% win rate over the next 20 trades**; gap vs. buy-hold nearly tripled to -14.7pp by 2026-09-13 |
 | 5 | Offline: perpetual-futures funding rate (raw rate, rolling z-score, 3-day cumulative), `scripts/funding_rate_experiment.py`, 48 products, ~12,145 buy-fired rows, up to 14 months | **AUC delta +0.001** (0.509→0.510); correlations with pnl all ~0 (+0.007, -0.026, +0.018); bucketed win rate flat at 39-43% across every quantile, no trend |
+| 6 | Offline: on-chain capital flow (stablecoin supply growth 3d/7d + z-score, DeFi TVL growth 7d), `scripts/onchain_flow_experiment.py`, 50 products, 13,557 buy-fired rows, 365 days | **AUC delta -0.031** (0.508→0.477, WORSE than baseline); correlations with pnl all ~0 (-0.007, -0.001, +0.023, +0.016); bucketed win rates noisy with no clean trend |
 
 **Conclusion**: EMA/RSI/MACD/momentum-derived features do not have a durable,
 real out-of-sample edge at this scale. Every time a live result looked good,
@@ -33,14 +34,17 @@ the same shape of false positive seen throughout this project. See the
 2026-09-13 entry below for the full account and what NOT to read into a
 small-subset result going forward.
 
-**Decision (2026-09-13)**: five independent evaluations (three momentum-family,
-one funding-rate) now agree: none of these signal types has a demonstrated
-edge on this product universe at this trade frequency. Simple offline
-feature engineering on public price/funding data does not appear to be where
-the next win is, if there is one. Candidates not yet tried: on-chain flows
-(needs a paid provider), cross-asset macro regime, or accepting the bot
+**Decision (2026-09-13)**: six independent evaluations (four momentum-family,
+funding-rate, on-chain flow) now agree: none of these signal types has a
+demonstrated edge on this product universe at this trade frequency. Simple
+offline feature engineering on public price/funding/on-chain data does not
+appear to be where the next win is, if there is one. Candidates not yet
+tried: cross-asset macro regime (FRED yields/dollar index — confirmed
+reachable, not yet backtested), options-implied vol/skew (Deribit, BTC/ETH
+only, so market-wide regime feature not per-product), or accepting the bot
 won't beat buy-and-hold on this design and changing the goal instead of the
-feature set.
+feature set. Paid on-chain providers (Glassnode/CryptoQuant, deeper metrics
+than DeFiLlama's free aggregate series) also untried.
 
 ## Engineering bugs that shaped what to trust in the above numbers
 
@@ -136,6 +140,30 @@ product universe and the deepest available history. **Never report or act
 on a small-subset backtest result before running the full-scale version** —
 if there isn't time/data to run full-scale immediately, say the small result
 is unconfirmed rather than leading with it.
+
+## 2026-09-13 (later): on-chain capital flow — third mechanism, same verdict
+
+Built `scripts/onchain_flow_experiment.py`, same harness pattern as the
+funding-rate script. Data: DeFiLlama's free, unblocked, deep-history daily
+series — aggregate USD-pegged stablecoin supply (`stablecoins.llama.fi`,
+back to 2017-11-29) and aggregate DeFi TVL (`api.llama.fi`, back to
+2017-09-27). Both are market-wide regime series (one number per day, shared
+across every product), unlike funding rate which was per-product.
+
+Ran the dry-run-then-full-scale discipline from the funding-rate lesson
+correctly this time: small dry run (6 products, 4 months) showed a
+*negative* delta (-0.045) with noisy, non-monotonic buckets — already a
+different shape from the funding-rate false positive, and per the standing
+rule, not treated as evidence either way.
+
+**Full run (50 products, 13,557 buy-fired rows, 365 days): AUC delta -0.031
+(0.508 → 0.477) — WORSE than baseline**, not just flat. Correlations with
+pnl all ~0. Bucketed win rates noisy, no clean trend on any of the four
+features. No demonstrated edge, and adding these features actively hurts
+the classifier (more noise for the model to fit around, no signal to
+compensate for it) — a slightly different failure shape from funding rate's
+"strictly neutral," worth keeping in mind if this is scored on AUC-improve
+rather than AUC-doesn't-regress.
 
 ## Open items
 
