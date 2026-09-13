@@ -162,9 +162,17 @@ class Bot:
             log.warning("outcome evaluation failed (%s); continuing cycle", exc)
 
         # Paper-start benchmark anchor: create on first paper cycle if absent.
+        # Pass anchor_ts_utc=now (the same timestamp this cycle's trades will
+        # use) so the anchor never lands after its own opening trades — an
+        # anchor stamped later drops those trades from reconstruct_equity's
+        # `ts_utc >= anchor_ts` filter, leaving permanent phantom short
+        # holdings and a silently-understated equity curve (see incident:
+        # dashboard equity spike traced to this).
         if mode == "paper":
             if all(p in prices for p in BENCH_PRODUCTS):
-                self.benchmark.ensure_anchor("paper", self.cfg.paper_start_bankroll, prices)
+                self.benchmark.ensure_anchor(
+                    "paper", self.cfg.paper_start_bankroll, prices, anchor_ts_utc=iso(now)
+                )
 
         # Portfolio-halt detection at cycle top. On trip, buys are already blocked
         # by the risk chokepoint; if HALT_AUTO_FLATTEN is enabled, also de-risk to

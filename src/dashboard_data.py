@@ -248,19 +248,43 @@ def reconstruct_equity(
     anchor_ts: Optional[str] = None,
     generated_at: Optional[str] = None,
     current_total: Optional[float] = None,
+    current_cash: Optional[float] = None,
+    current_holdings: Optional[dict[str, float]] = None,
 ) -> list[dict]:
-    """Replay ``trades`` (ascending by ts) to build a bot equity curve.
+    """Build a bot equity curve, ascending by ts. Each point is
+    ``{"ts": iso, "value": ...}``, marked at ``current_prices`` throughout (by
+    design every point uses TODAY's price, not the historical one — otherwise
+    a non-benchmark holding sits frozen at its last trade price for every
+    point except the final one, producing a curve that's flat until a sudden
+    jump at the very end).
 
-    Uses only stored data + current prices. Each point is
-    ``{"ts": iso, "value": cash + Σ holdings * last_known_price}``.
-    A starting anchor point at ``start_bankroll`` is prepended and a final
-    mark-to-market point at ``generated_at`` (equal to ``current_total`` when
-    provided) is appended. Empty trades ⇒ a flat two-point line.
+    Two modes:
+
+    * ``current_cash``/``current_holdings`` given (the normal, ground-truth
+      path — ``build_payload`` always supplies these): walk **backward** from
+      that known-true present state, undoing one trade at a time, so every
+      point is exactly consistent with today's real cash + positions. This is
+      the only correct way to handle any cash/position ever set outside the
+      trade log — e.g. ``seed_position`` seeds a fresh paper epoch from real
+      account balances with no accompanying trade row (deliberately: it's not
+      a decision the bot made). A forward replay starting from pure
+      ``start_bankroll`` cash has no way to see that seeded value, so seeded
+      holdings show up as permanent phantom short positions and the curve
+      silently understates equity for the whole epoch until the final,
+      truth-sourced point snaps it back — a discontinuity that looks like a
+      bad last tick but is actually every earlier tick being wrong. Anchoring
+      to the present and replaying in reverse needs no knowledge of what was
+      seeded; it is exact by construction.
+    * Neither given (legacy/test path): forward replay from ``start_bankroll``
+      cash and zero holdings, as before — fine when there is no seeding to
+      account for.
 
     Trades strictly before ``anchor_ts`` are dropped: an anchor marks a fresh
     epoch (e.g. a capital reset), and replaying pre-anchor trades on top of the
-    new ``start_bankroll`` would both misstate cash and emit points that sort
-    earlier than the anchor itself, breaking the ascending-ts line.
+    new epoch would both misstate cash and emit points that sort earlier than
+    the anchor itself, breaking the ascending-ts line.
+
+    Empty trades ⇒ a flat two-point line.
     """
     rows = list(trades)
     rows.sort(key=lambda t: t["ts_utc"])
@@ -271,10 +295,50 @@ def reconstruct_equity(
     first_ts = rows[0]["ts_utc"] if rows else gen_ts
     start_ts = anchor_ts or first_ts
 
-    points: list[dict] = [{"ts": start_ts, "value": float(start_bankroll)}]
+    if current_cash is not None and current_holdings is not None:
+        final_value = (
+            float(current_total) if current_total is not None
+            else float(current_cash) + sum(
+                current_holdings.get(p, 0.0) * current_prices.get(p, 0.0)
+                for p in current_holdings
+            )
+        )
+        cash = float(current_cash)
+        holdings: dict[str, float] = dict(current_holdings)
+        reversed_points: list[dict] = []
+        for t in reversed(rows):
+            # cash/holdings currently hold the state AFTER this trade — capture
+            # its point before undoing it.
+            value = cash + sum(
+                holdings.get(p, 0.0) * current_prices.get(p, 0.0) for p in holdings
+            )
+            reversed_points.append({"ts": t["ts_utc"], "value": value})
+            side = t["side"]
+            product = t["product"]
+            base_size = float(t["base_size"])
+            notional = float(t["notional"])
+            fee = float(t["fee"] or 0.0)
+            if side == "buy":  # undo: give back the spend, take back the base
+                cash += (notional + fee)
+                holdings[product] = holdings.get(product, 0.0) - base_size
+            else:  # undo a sell
+                cash -= (notional - fee)
+                holdings[product] = holdings.get(product, 0.0) + base_size
+        # cash/holdings now hold the true state right before the first trade,
+        # i.e. the real anchor-time state (seeded positions included).
+        anchor_value = cash + sum(
+            holdings.get(p, 0.0) * current_prices.get(p, 0.0) for p in holdings
+        )
+        points = [{"ts": start_ts, "value": anchor_value}]
+        points.extend(reversed(reversed_points))
+        points.append({"ts": gen_ts, "value": final_value})
+        return points
+
+    # -- legacy/test path: forward replay from start_bankroll, no seed data --
+    points = [{"ts": start_ts, "value": float(start_bankroll)}]
 
     cash = float(start_bankroll)
-    holdings: dict[str, float] = {}
+    holdings = {}
     last_price: dict[str, float] = {}
     for t in rows:
         side = t["side"]
@@ -478,17 +542,33 @@ def build_payload(cfg, ro_state: ReadOnlyState, price_provider: PriceProvider) -
         anchor_ts = anchor["anchor_ts_utc"] if anchor else None
         current_total = payload["portfolio"]["total_value"] if payload["portfolio"] else None
         all_trades = ro_state.all_trades()
-        # Mark every traded product to its current price, not just the three
-        # benchmark products in `prices` — otherwise non-benchmark holdings sit
-        # frozen at their last trade price for every point except the final
-        # one (which uses portfolio.total_value's live fetch), producing a
-        # curve that's flat until a sudden jump at the very end.
+        current_positions = ro_state.open_positions()
+        current_holdings = {p: float(pos["base_size"]) for p, pos in current_positions.items()}
+        # Mark every traded or currently-held product to its current price,
+        # not just the three benchmark products in `prices` — otherwise a
+        # non-benchmark holding sits frozen at its last trade price for every
+        # point except the final one, producing a curve that's flat until a
+        # sudden jump at the very end. Currently-held products are included
+        # too (not just traded ones) so a seeded-but-never-traded position is
+        # still priced (see reconstruct_equity's backward-replay docstring).
         equity_prices = dict(prices)
-        for product in {t["product"] for t in all_trades} - equity_prices.keys():
+        equity_products = {t["product"] for t in all_trades} | current_holdings.keys()
+        for product in equity_products - equity_prices.keys():
             equity_prices[product], _ = price_provider.get(product, ro_state)
+        # Ground-truth backward replay only applies in paper mode, where cash
+        # and positions are entirely trade-driven (see reconstruct_equity's
+        # docstring). In live mode `portfolio.cash` is the REAL total Coinbase
+        # USD balance (not moved by execution.py at all — see Portfolio.cash),
+        # while `open_positions()` covers only the bot's own tracked
+        # positions — an inconsistent basis that the backward undo would
+        # corrupt. Live keeps the legacy forward-from-start_bankroll path.
+        equity_kwargs = {}
+        if mode == "paper":
+            equity_kwargs = {"current_cash": portfolio.cash, "current_holdings": current_holdings}
         payload["equity"] = reconstruct_equity(
             all_trades, start_bankroll, equity_prices,
             anchor_ts=anchor_ts, generated_at=generated_at, current_total=current_total,
+            **equity_kwargs,
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("dashboard: equity block failed: %s", exc)

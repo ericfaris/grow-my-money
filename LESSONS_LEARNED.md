@@ -25,14 +25,14 @@ real out-of-sample edge at this scale. Every time a live result looked good,
 it was a small-sample fluke that inverted on the next batch — not evidence
 tuning would fix. Threshold/horizon/volatility-screen tuning was tried
 repeatedly across both regimes; the shape of the result never changed.
-**Funding rate — a genuinely different signal mechanism, not another
-momentum variant — was tried next and landed in the same place**: a small
-subset (6 products, 4 months) looked strong (AUC +0.098, a clean bucketed
-win-rate progression 22%→67%), but that did not replicate at the full
-universe/history scale. The small-sample result was noise, not signal —
-the same shape of false positive seen throughout this project. See the
-2026-09-13 entry below for the full account and what NOT to read into a
-small-subset result going forward.
+**Funding rate and on-chain flow — two genuinely different signal
+mechanisms, not more momentum variants — were tried next and landed in the
+same place.** Funding rate looked strong on a small subset (AUC +0.098, a
+clean bucketed win-rate progression) but that did not replicate at full
+scale. On-chain flow didn't even look promising small, and was actively
+worse than baseline at full scale. See the two 2026-09-13 entries below for
+the full account of each, including what NOT to read into a small-subset
+result.
 
 **Decision (2026-09-13)**: six independent evaluations (four momentum-family,
 funding-rate, on-chain flow) now agree: none of these signal types has a
@@ -44,7 +44,8 @@ reachable, not yet backtested), options-implied vol/skew (Deribit, BTC/ETH
 only, so market-wide regime feature not per-product), or accepting the bot
 won't beat buy-and-hold on this design and changing the goal instead of the
 feature set. Paid on-chain providers (Glassnode/CryptoQuant, deeper metrics
-than DeFiLlama's free aggregate series) also untried.
+than DeFiLlama's free aggregate series) also untried. Paused here as of
+2026-09-13 — Eric wants to think before picking a next direction.
 
 ## Engineering bugs that shaped what to trust in the above numbers
 
@@ -167,7 +168,10 @@ rather than AUC-doesn't-regress.
 
 ## Open items
 
-- Funding-rate/basis backtest — not started.
+- Next signal direction — paused 2026-09-13 pending Eric's decision (see the
+  Decision note above): candidates on the table are cross-asset macro
+  regime, options-implied vol/skew, paid on-chain providers, or stepping
+  back from "beat buy-and-hold via feature engineering" as the goal.
 - A capital reset (re-seed paper trading from current real Coinbase
   balances) is planned for whenever the next research direction is ready to
   deploy, not yet executed. Current real balance (pulled 2026-09-13):
