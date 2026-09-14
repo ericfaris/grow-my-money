@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Debian security patches Docker Hub hasn't rebuilt this tag with yet.
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
