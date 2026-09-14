@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 DB_PATH = "state/grow.db"
 _INDEX_HTML = Path(__file__).parent / "dashboard_web" / "index.html"
 _FAVICON = Path(__file__).parent / "dashboard_web" / "favicon.ico"
+_SHOWCASE_HTML = Path(__file__).parent / "dashboard_web" / "showcase.html"
 
 app = FastAPI(title="grow-my-money dashboard", docs_url=None, redoc_url=None)
 
@@ -40,6 +41,14 @@ def index() -> HTMLResponse:
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon() -> FileResponse:
     return FileResponse(_FAVICON, media_type="image/vnd.microsoft.icon")
+
+
+@app.get("/design-system", response_class=HTMLResponse, include_in_schema=False)
+def design_system() -> HTMLResponse:
+    """Static design-system showcase — renders live from index.html's own
+    <style> block (fetched client-side from "/"), never a hand-copied one.
+    See DESIGN.md at the repo root."""
+    return HTMLResponse(_SHOWCASE_HTML.read_text(encoding="utf-8"))
 
 
 @app.get("/api/data")

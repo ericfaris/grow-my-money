@@ -1,0 +1,334 @@
+<!--
+  grow-my-money — design system showcase ("Terminal Ledger").
+
+  This page renders every token and component LIVE from the real dashboard's
+  own <style> block: on load it fetches "/" (the actual index.html served by
+  src/dashboard.py), pulls out its <style>...</style> content verbatim, and
+  injects it into this page's <head>. Nothing below hand-copies a color/size
+  value — every swatch, scale step, and component below is styled by the
+  exact CSS the live dashboard uses, so this page cannot silently drift out
+  of sync with it. See DESIGN.md at the repo root for the full narrative,
+  rationale, and token reference this page visualizes.
+
+  Serve it via the dashboard's own FastAPI app at GET /design-system
+  (see src/dashboard.py) — it needs "/" to be reachable from the same origin.
+  Opening this file directly (file://) will show an inline error banner
+  instead of a broken page.
+-->
+<title>grow-my-money · design system</title>
+<link rel="icon" href="/favicon.ico" />
+<style>
+  /* Showcase-only chrome — deliberately NOT part of the design-system tokens
+     below (labels, section scaffolding). Uses generic system fonts so it's
+     visually obvious which parts of this page are "meta" vs. real tokens
+     once the real <style> block loads and takes over headings/components. */
+  html, body { margin: 0; }
+  body { background: #0a0c0f; color: #eef1f4; font: 14px/1.5 -apple-system, sans-serif; }
+  #boot-err {
+    display: none; margin: 24px; padding: 16px; border: 1px solid #e5484d;
+    border-radius: 8px; color: #e5484d; font: 13px/1.5 monospace; max-width: 900px;
+  }
+  .sc-wrap { max-width: 1120px; margin: 0 auto; padding: 32px 20px 96px; }
+  .sc-header { margin-bottom: 40px; }
+  .sc-header .kicker { font: 600 12px/1.4 ui-monospace, monospace; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.6; }
+  .sc-header h1 { font-size: 28px; margin: 6px 0 8px; }
+  .sc-header p { max-width: 68ch; opacity: 0.75; margin: 0; }
+  .sc-section { margin: 48px 0; }
+  .sc-section > h2 {
+    font: 700 13px/1.4 ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.08em;
+    opacity: 0.55; margin: 0 0 16px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.12);
+  }
+  .sc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .sc-swatch { border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,255,255,0.12); }
+  .sc-swatch .chip { height: 64px; }
+  .sc-swatch .meta { padding: 8px 10px; background: rgba(255,255,255,0.04); font: 11px/1.5 ui-monospace, monospace; }
+  .sc-swatch .meta b { display: block; font-size: 12px; }
+  .sc-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+  .sc-row .tok { width: 220px; flex: none; font: 11px/1.4 ui-monospace, monospace; opacity: 0.6; }
+  .sc-scale-box { background: #3d8bef; border-radius: 4px; }
+  .sc-radius-box { width: 64px; height: 64px; background: #171b21; border: 1px solid rgba(255,255,255,0.18); }
+  .sc-shadow-card { width: 200px; height: 90px; border-radius: 14px; background: #12151a; border: 1px solid rgba(255,255,255,0.09); display: flex; align-items: center; justify-content: center; font: 12px ui-monospace, monospace; opacity: 0.7; }
+  .sc-motion-box {
+    width: 64px; height: 64px; border-radius: 10px; background: #3d8bef; cursor: pointer;
+    transition: transform var(--dur, 200ms) var(--ease, ease); flex: none;
+  }
+  .sc-motion-box:hover { transform: translateY(-8px) scale(1.05); }
+  .sc-motion-label { font: 11px/1.4 ui-monospace, monospace; opacity: 0.6; margin-top: 6px; }
+  .sc-flex { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .sc-note { opacity: 0.6; font-size: 12.5px; max-width: 68ch; }
+  .sc-two { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+  @media (max-width: 720px) { .sc-two { grid-template-columns: 1fr; } }
+  .sc-type-row { display: flex; align-items: baseline; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+  .sc-type-row .tag-label { width: 130px; flex: none; font: 11px/1.4 ui-monospace, monospace; opacity: 0.55; }
+</style>
+
+<div id="boot-err">
+  Could not load live tokens from <code>/</code> — this page must be served by the
+  dashboard's own FastAPI app (GET <code>/design-system</code>), not opened as a
+  local file, since it renders the real <code>index.html</code> stylesheet rather
+  than a hand-copied one.
+</div>
+
+<div class="sc-wrap" id="sc-root" hidden>
+  <header class="sc-header">
+    <div class="kicker">grow-my-money · design system · v1.0</div>
+    <h1>Terminal Ledger</h1>
+    <p>
+      Every token and component on this page is rendered by the live
+      <code>&lt;style&gt;</code> block from <code>src/dashboard_web/index.html</code> —
+      fetched at load time, not copied. If the real dashboard's CSS changes, this
+      page changes with it. See <code>DESIGN.md</code> for the full narrative.
+    </p>
+  </header>
+
+  <section class="sc-section">
+    <h2>Color</h2>
+    <div class="sc-grid" id="color-swatches"></div>
+  </section>
+
+  <section class="sc-section">
+    <h2>Type</h2>
+    <div id="type-scale"></div>
+  </section>
+
+  <section class="sc-section">
+    <h2>Spacing</h2>
+    <div id="spacing-scale"></div>
+  </section>
+
+  <section class="sc-section">
+    <h2>Radius</h2>
+    <div class="sc-flex" id="radius-scale"></div>
+  </section>
+
+  <section class="sc-section">
+    <h2>Shadow</h2>
+    <div class="sc-flex" id="shadow-scale"></div>
+  </section>
+
+  <section class="sc-section">
+    <h2>Motion</h2>
+    <p class="sc-note">Hover each box — it eases with the named duration/curve. Respects <code>prefers-reduced-motion</code> (the real dashboard disables all transitions when it's set).</p>
+    <div class="sc-flex" id="motion-scale"></div>
+  </section>
+
+  <section class="sc-section">
+    <h2>Components — buttons &amp; pills</h2>
+    <div class="sc-two">
+      <div>
+        <div class="sc-flex" style="margin-bottom:16px">
+          <button class="btn btn-primary" type="button">Refresh</button>
+          <button class="btn" type="button">Secondary</button>
+          <button class="btn btn-primary" type="button" disabled>Disabled</button>
+        </div>
+      </div>
+      <div>
+        <div class="sc-flex">
+          <span class="pill good"><span class="dot"></span>kill: clear</span>
+          <span class="pill bad"><span class="dot"></span>kill: ENGAGED</span>
+          <span class="pill warn"><span class="dot"></span>trades 24h: 5 / 5</span>
+          <span class="pill mode-live"><span class="dot"></span>mode: live</span>
+          <span class="pill"><span class="dot"></span>mode: paper</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sc-section">
+    <h2>Components — tags</h2>
+    <div class="sc-flex">
+      <span class="tag buy">buy</span>
+      <span class="tag sell">sell</span>
+      <span class="tag filled">filled</span>
+      <span class="tag pending">pending</span>
+      <span class="tag reject">reject</span>
+      <span class="tag blocked">blocked</span>
+    </div>
+  </section>
+
+  <section class="sc-section">
+    <h2>Components — KPI cards</h2>
+    <div class="grid-kpi">
+      <div class="card kpi hero"><div class="label">Bot vs. buy &amp; hold</div><div class="value pos">+4.21% better</div><div class="foot">buy &amp; hold +8.1% · bot +12.3%</div></div>
+      <div class="card kpi"><div class="label">Total value</div><div class="value">$10,767.96</div><div class="foot">bankroll $10,000.00</div></div>
+      <div class="card kpi"><div class="label">Cash</div><div class="value">$8,000.00</div><div class="foot">positions $2,767.96</div></div>
+      <div class="card kpi"><div class="label">Bot return</div><div class="value small neg">-3.40%</div><div class="foot">$9,660.00</div></div>
+    </div>
+  </section>
+
+  <section class="sc-section">
+    <h2>Components — table &amp; model panel</h2>
+    <div class="two-col">
+      <div class="card table-scroll">
+        <table>
+          <thead><tr><th>Product</th><th>Size</th><th>Avg entry</th><th>Price</th><th>Market value</th><th>Unrealized P&amp;L</th></tr></thead>
+          <tbody>
+            <tr><td>BTC-USD</td><td class="num">0.020000</td><td class="num">$59,000.00</td><td class="num">$76,603.94<span class="src-badge">cached</span></td><td class="num">$1,532.08</td><td class="num pos">$352.08 (+29.84%)</td></tr>
+            <tr><td>ETH-USD</td><td class="num">0.500000</td><td class="num">$3,000.00</td><td class="num">$2,471.77</td><td class="num">$1,235.88</td><td class="num neg">-$264.12 (-17.61%)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card" id="model-demo">
+        <div class="model-row"><span class="k">Trained</span><span class="v">2026-09-13 23:21:03</span></div>
+        <div class="model-row"><span class="k">Samples</span><span class="v">120</span></div>
+        <div class="model-row"><span class="k">Holdout logloss</span><span class="v">0.6200</span></div>
+        <div class="model-row"><span class="k">Promoted</span><span class="v pos">yes</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sc-section">
+    <h2>Components — equity chart legend &amp; crosshair</h2>
+    <div class="card chart-card">
+      <div class="chart-head">
+        <div class="legend">
+          <span><i class="bot"></i> Bot equity</span>
+          <span><i class="bench"></i> Buy &amp; hold (endpoints)</span>
+        </div>
+      </div>
+      <div class="chart-holder" style="height:60px">
+        <div class="crosshair-tip" style="opacity:1;position:static;transform:none;display:inline-block"><b>$10,767.96</b><br><span class="muted">23:21:03Z</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sc-section">
+    <h2>States</h2>
+    <div id="err" style="display:block;position:static;margin-bottom:12px">Could not load data: HTTP 500 (retrying)</div>
+    <div class="empty">No open positions.</div>
+  </section>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  fetch("/", { cache: "no-store" })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+    .then(function (html) {
+      var m = html.match(/<style>([\s\S]*?)<\/style>/);
+      if (!m) throw new Error("no <style> block found in /");
+      var style = document.createElement("style");
+      style.textContent = m[1];
+      document.head.appendChild(style);
+      buildColorSwatches();
+      buildTypeScale();
+      buildSpacingScale();
+      buildRadiusScale();
+      buildShadowScale();
+      buildMotionScale();
+      document.getElementById("sc-root").hidden = false;
+    })
+    .catch(function (e) {
+      var err = document.getElementById("boot-err");
+      err.style.display = "block";
+      err.textContent += " (" + e.message + ")";
+    });
+
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function buildColorSwatches() {
+    var tokens = [
+      ["--page", "page background"], ["--surface-1", "card surface"], ["--surface-2", "raised surface / hover"],
+      ["--border", "hairline border"], ["--chip-bg", "pill / tag fill"],
+      ["--text-1", "primary text"], ["--text-2", "secondary text"], ["--muted", "muted / labels"],
+      ["--grid", "chart gridlines"], ["--axis", "chart axis / bankroll ref"],
+      ["--series-1", "bot equity / accent"], ["--benchmark", "buy & hold line"],
+      ["--good", "good / buy"], ["--good-text", "good text on surface"],
+      ["--critical", "critical / sell / danger"], ["--warning", "warning / caution"]
+    ];
+    var root = document.getElementById("color-swatches");
+    tokens.forEach(function (t) {
+      var val = cssVar(t[0]);
+      var div = document.createElement("div");
+      div.className = "sc-swatch";
+      div.innerHTML =
+        '<div class="chip" style="background:var(' + t[0] + ')"></div>' +
+        '<div class="meta"><b>' + t[0] + '</b>' + t[1] + '<br>' + val + '</div>';
+      root.appendChild(div);
+    });
+  }
+
+  function buildTypeScale() {
+    var steps = [
+      { label: "Display (hero KPI)", style: "font:700 32px/1.1 var(--font-mono);", sample: "+12.4% better" },
+      { label: "H1 (page title)", style: "font:700 19px/1.2 var(--font-mono);", sample: "grow-my-money" },
+      { label: "KPI value", style: "font:700 26px/1.15 var(--font-mono);", sample: "$10,767.96" },
+      { label: "KPI value / small", style: "font:700 21px/1.2 var(--font-mono);", sample: "-3.40%" },
+      { label: "H2 (section label)", style: "font:700 12px/1.4 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;", sample: "Equity curve" },
+      { label: "Body (table/prose)", style: "font:400 13px/1.5 var(--font-sans);", sample: "ema_cross; p_win=0.61" },
+      { label: "Label (column head)", style: "font:600 11px/1.4 var(--font-mono);text-transform:uppercase;letter-spacing:.04em;", sample: "Unrealized P&L" },
+      { label: "Caption (footnote)", style: "font:400 12.5px/1.4 var(--font-sans);", sample: "updated 23:21:19Z · refresh 15s" }
+    ];
+    var root = document.getElementById("type-scale");
+    steps.forEach(function (s) {
+      var row = document.createElement("div");
+      row.className = "sc-type-row";
+      row.innerHTML = '<span class="tag-label">' + s.label + '</span><span style="' + s.style + 'color:var(--text-1)">' + s.sample + '</span>';
+      root.appendChild(row);
+    });
+  }
+
+  function buildSpacingScale() {
+    var steps = ["--sp-1", "--sp-2", "--sp-3", "--sp-4", "--sp-5", "--sp-6", "--sp-7", "--sp-8"];
+    var root = document.getElementById("spacing-scale");
+    steps.forEach(function (name) {
+      var val = cssVar(name);
+      var row = document.createElement("div");
+      row.className = "sc-row";
+      row.innerHTML = '<span class="tok">' + name + ' = ' + val + '</span><span class="sc-scale-box" style="width:' + val + ';height:14px"></span>';
+      root.appendChild(row);
+    });
+  }
+
+  function buildRadiusScale() {
+    var steps = ["--r-sm", "--r-md", "--r-lg", "--r-pill"];
+    var root = document.getElementById("radius-scale");
+    steps.forEach(function (name) {
+      var val = cssVar(name);
+      var wrap = document.createElement("div");
+      wrap.innerHTML =
+        '<div class="sc-radius-box" style="border-radius:var(' + name + ')"></div>' +
+        '<div class="sc-motion-label">' + name + ' = ' + val + '</div>';
+      root.appendChild(wrap);
+    });
+  }
+
+  function buildShadowScale() {
+    var steps = ["--shadow", "--shadow-sm"];
+    var root = document.getElementById("shadow-scale");
+    steps.forEach(function (name) {
+      var card = document.createElement("div");
+      card.className = "sc-shadow-card";
+      card.style.boxShadow = "var(" + name + ")";
+      card.textContent = name;
+      root.appendChild(card);
+    });
+  }
+
+  function buildMotionScale() {
+    var pairs = [
+      ["--dur-fast", "button/tag hover"],
+      ["--dur-base", "crosshair tooltip fade"],
+      ["--dur-slow", "reserved for larger reveals"]
+    ];
+    var ease = cssVar("--ease-standard") || "ease";
+    var root = document.getElementById("motion-scale");
+    pairs.forEach(function (p) {
+      var dur = cssVar(p[0]);
+      var wrap = document.createElement("div");
+      var box = document.createElement("div");
+      box.className = "sc-motion-box";
+      box.style.setProperty("--dur", dur);
+      box.style.setProperty("--ease", ease);
+      wrap.appendChild(box);
+      var label = document.createElement("div");
+      label.className = "sc-motion-label";
+      label.textContent = p[0] + " = " + dur + " · " + p[1];
+      wrap.appendChild(label);
+      root.appendChild(wrap);
+    });
+  }
+})();
+</script>
