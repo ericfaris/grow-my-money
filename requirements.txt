@@ -6,6 +6,6 @@ joblib==1.6.0
 python-dotenv==1.2.3
 requests==2.34.2
 pytest==9.1.1
-freezegun==1.5.1
+freezegun==1.5.5
 fastapi==0.141.1
 uvicorn==0.53.0
