@@ -2,7 +2,7 @@ coinbase-advanced-py==1.8.4
 pandas==3.0.6
 numpy==2.3.3
 scikit-learn==1.9.1
-joblib==1.4.2
+joblib==1.6.0
 python-dotenv==1.2.3
 requests==2.32.3
 pytest==9.1.1
